@@ -82,6 +82,7 @@ const API = (() => {
             const delay = Math.pow(2, attempt) * 1000;
             console.warn(`Rate limited. Retrying in ${delay}ms...`);
             lastError = new Error('HTTP 429: Too Many Requests');
+            if (attempt === retries) throw lastError;
             await sleep(delay);
             continue;
           }
