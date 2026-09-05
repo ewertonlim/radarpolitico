@@ -1,0 +1,18 @@
+{
+  "name": "transparencia-brasil-radar-politico",
+  "version": "1.0.0",
+  "description": "Radar Político — Monitor de Gastos e Proposições de Deputados Federais",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "transparencia",
+    "politica",
+    "brasil",
+    "dados-abertos"
+  ],
+  "author": "Radar Político",
+  "license": "MIT"
+}

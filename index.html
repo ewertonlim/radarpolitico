@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- SEO -->
+  <title>Radar Político — Monitor de Deputados Federais</title>
+  <meta name="description" content="Acompanhe gastos, votações e proposições dos deputados federais brasileiros. Dados abertos da Câmara dos Deputados em tempo real." />
+  <meta name="keywords" content="deputados, gastos públicos, transparência, Câmara dos Deputados, CEAP, Brasil, política" />
+  <meta name="author" content="Radar Político" />
+  <meta name="robots" content="index, follow" />
+
+  <!-- OG -->
+  <meta property="og:title" content="Radar Político — Monitor de Deputados Federais" />
+  <meta property="og:description" content="Acompanhe gastos, votações e proposições dos deputados federais brasileiros em tempo real." />
+  <meta property="og:type" content="website" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="css/styles.css" />
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <!-- ============================== HEADER ============================== -->
+  <header class="header" id="main-header">
+    <div class="container header-inner">
+      <div class="logo">
+        <img src="assets/favicon.svg" alt="Radar Político" />
+        <span>Radar <span class="logo-accent">Político</span></span>
+      </div>
+
+      <div class="header-search">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        <input
+          type="text"
+          id="header-search-input"
+          placeholder="Buscar deputado por nome..."
+          autocomplete="off"
+          aria-label="Buscar deputado"
+        />
+      </div>
+
+      <div class="header-stats">
+        <div class="header-stat">
+          <div class="header-stat-value">513</div>
+          <div class="header-stat-label">Cadeiras</div>
+        </div>
+        <div class="header-stat">
+          <div class="header-stat-value">57ª</div>
+          <div class="header-stat-label">Legislatura</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============================== HERO ============================== -->
+  <section class="hero" id="hero-section">
+    <div class="container hero-content">
+      <h1>
+        Monitore seus<br />
+        <span class="gradient-text">Representantes</span>
+      </h1>
+      <p>
+        Acompanhe gastos, votações e proposições dos deputados federais.
+        Dados abertos atualizados diretamente da Câmara dos Deputados.
+      </p>
+      <div id="hero-stats">
+        <!-- Stats will be rendered here -->
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== FILTERS ============================== -->
+  <section class="filters-section" id="filters-section">
+    <div class="container" id="filters-container">
+      <!-- Filter bar rendered by JS -->
+    </div>
+  </section>
+
+  <!-- ============================== DEPUTIES GRID ============================== -->
+  <section class="deputies-section">
+    <div class="container">
+      <h2 class="section-title">
+        <span class="icon">🏛️</span>
+        Deputados Federais
+      </h2>
+
+      <div class="deputies-grid" id="deputies-grid">
+        <!-- Deputies rendered by JS -->
+      </div>
+
+      <div class="pagination" id="pagination-container">
+        <!-- Pagination rendered by JS -->
+      </div>
+    </div>
+  </section>
+
+
+
+
+  <!-- ============================== MODAL ============================== -->
+  <div class="modal-overlay" id="modal-overlay" role="dialog" aria-modal="true" aria-label="Perfil do Deputado">
+    <div class="modal" id="modal-content">
+      <!-- Modal content rendered by JS -->
+    </div>
+  </div>
+
+  <!-- ============================== FOOTER ============================== -->
+  <footer class="footer">
+    <div class="container">
+      <p>
+        <strong>Radar Político</strong> — Dados abertos da
+        <a href="https://dadosabertos.camara.leg.br" target="_blank" rel="noopener noreferrer">
+          Câmara dos Deputados
+        </a>
+      </p>
+      <p style="margin-top:0.5rem;font-size:0.75rem;color:var(--text-muted)">
+        Projeto independente. Não é serviço oficial do governo brasileiro.<br />
+        API: dadosabertos.camara.leg.br/api/v2 · 57ª Legislatura (2023–2027)
+      </p>
+      <div class="footer-links">
+        <a href="https://dadosabertos.camara.leg.br/swagger/api.html" target="_blank" rel="noopener noreferrer">
+          📚 Documentação API
+        </a>
+        <a href="https://github.com/Mcp-Brasil/mcp-brasil" target="_blank" rel="noopener noreferrer">
+          🇧🇷 MCP Brasil
+        </a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ============================== SCRIPTS ============================== -->
+  <script src="js/api.js"></script>
+  <script src="js/components.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>
