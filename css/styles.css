@@ -864,11 +864,14 @@ img {
   border-radius: var(--radius-md);
   padding: var(--space-md);
   text-align: center;
+  container-type: inline-size;
 }
 
 .summary-card-value {
   font-size: var(--fs-xl);
+  font-size: clamp(1rem, 10cqi, var(--fs-xl));
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .summary-card-label {
