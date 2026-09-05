@@ -73,12 +73,16 @@ const API = (() => {
     if (cached) return cached;
 
     return enqueue(async () => {
+      let lastError;
+
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
           const response = await fetch(url);
           if (response.status === 429) {
             const delay = Math.pow(2, attempt) * 1000;
             console.warn(`Rate limited. Retrying in ${delay}ms...`);
+            lastError = new Error('HTTP 429: Too Many Requests');
+            if (attempt === retries) throw lastError;
             await sleep(delay);
             continue;
           }
@@ -89,13 +93,15 @@ const API = (() => {
           setCache(url, data);
           return data;
         } catch (err) {
-          // Network/CORS errors (TypeError) are not recoverable — don't retry
-          if (err instanceof TypeError || attempt === retries) throw err;
+          lastError = err;
+          if (attempt === retries) throw err;
           const delay = Math.pow(2, attempt) * 500;
           console.warn(`Attempt ${attempt} failed. Retrying in ${delay}ms...`, err.message);
           await sleep(delay);
         }
       }
+
+      throw lastError || new Error('Request failed');
     });
   }
 
@@ -218,6 +224,7 @@ const API = (() => {
   async function getDeputadoDespesas(id, ano, pagina = 1, itens = 100) {
     const url = buildURL(`/deputados/${id}/despesas`, {
       ano: ano || new Date().getFullYear(),
+      idLegislatura: LEGISLATURE,
       pagina,
       itens,
       ordem: 'DESC',
