@@ -223,6 +223,7 @@ const API = (() => {
   async function getDeputadoDespesas(id, ano, pagina = 1, itens = 100) {
     const url = buildURL(`/deputados/${id}/despesas`, {
       ano: ano || new Date().getFullYear(),
+      idLegislatura: LEGISLATURE,
       pagina,
       itens,
       ordem: 'DESC',
