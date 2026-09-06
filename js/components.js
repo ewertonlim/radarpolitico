@@ -330,11 +330,112 @@ const Components = (() => {
 
   function propositionItem(prop) {
     return `
-      <li class="proposition-item">
-        <span class="proposition-type">${prop.siglaTipo} ${prop.numero}/${prop.ano}</span>
-        <div class="proposition-text">${prop.ementa || 'Sem ementa disponível'}</div>
+      <li class="proposition-item" data-prop-id="${prop.id}" role="button" tabindex="0"
+          aria-expanded="false" aria-label="Ver detalhes de ${escapeHTML(prop.siglaTipo)} ${prop.numero}/${prop.ano}">
+        <div class="proposition-header">
+          <span class="proposition-type">${escapeHTML(prop.siglaTipo)} ${prop.numero}/${prop.ano}</span>
+          <span class="proposition-chevron" aria-hidden="true">▾</span>
+        </div>
+        <div class="proposition-text">${escapeHTML(prop.ementa) || 'Sem ementa disponível'}</div>
         <div class="proposition-date">Apresentada em ${API.formatDate(prop.dataApresentacao)}</div>
+        <div class="proposition-detail" id="prop-detail-${prop.id}" hidden></div>
       </li>
+    `;
+  }
+
+  function propositionDetailSkeleton() {
+    return `
+      <div class="proposition-detail-loading">
+        <div class="skeleton skeleton-line w-60" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line w-40"></div>
+      </div>
+    `;
+  }
+
+  function camaraFichaURL(id) {
+    return `https://www.camara.leg.br/proposicoesWeb/fichadetramitacao?idProposicao=${id}`;
+  }
+
+  function propositionDetailError(id) {
+    return `
+      <div class="proposition-detail-error">
+        <span>⚠️ Não foi possível carregar os detalhes desta proposição.</span>
+        <div class="proposition-detail-actions">
+          <button class="btn-load-more prop-retry" type="button" data-prop-id="${id}">Tentar novamente</button>
+          <a class="btn-load-more" href="${camaraFichaURL(id)}" target="_blank" rel="noopener noreferrer">Ver no portal da Câmara</a>
+        </div>
+      </div>
+    `;
+  }
+
+  function propositionDetail({ detalhe, tramitacoes = [], autores = [] } = {}) {
+    if (!detalhe) return propositionDetailError('');
+
+    const id = detalhe.id;
+    const ementa = escapeHTML(detalhe.ementaDetalhada || detalhe.ementa) || 'Sem ementa disponível';
+
+    const keywords = (detalhe.keywords || '')
+      .split(',')
+      .map(k => k.trim())
+      .filter(Boolean)
+      .slice(0, 12)
+      .map(k => `<span class="keyword-chip">${escapeHTML(k)}</span>`)
+      .join('');
+
+    const status = detalhe.statusProposicao || {};
+    const statusBlock = status.descricaoSituacao || status.descricaoTramitacao ? `
+      <div class="proposition-detail-section">
+        <h4 class="proposition-detail-title">Situação atual</h4>
+        ${status.descricaoSituacao ? `<span class="status-badge">${escapeHTML(status.descricaoSituacao)}</span>` : ''}
+        <div class="proposition-detail-text">
+          ${escapeHTML(status.descricaoTramitacao) || '—'}
+          ${status.siglaOrgao ? ` · ${escapeHTML(status.siglaOrgao)}` : ''}
+          ${status.dataHora ? ` · ${API.formatDate(status.dataHora)}` : ''}
+        </div>
+      </div>
+    ` : '';
+
+    const tramitacoesBlock = tramitacoes.length > 0
+      ? `<ul class="tramitacao-timeline">
+          ${tramitacoes.slice(0, 5).map(t => `
+            <li class="tramitacao-item">
+              <div class="tramitacao-date">${API.formatDate(t.dataHora)}${t.siglaOrgao ? ` · ${escapeHTML(t.siglaOrgao)}` : ''}</div>
+              <div class="proposition-detail-text">${escapeHTML(t.descricaoTramitacao) || '—'}${t.despacho ? ` — ${escapeHTML(t.despacho)}` : ''}</div>
+            </li>
+          `).join('')}
+        </ul>`
+      : '<div class="proposition-detail-text">Nenhuma tramitação registrada.</div>';
+
+    const autoresBlock = autores.length > 1 ? `
+      <div class="proposition-detail-section">
+        <h4 class="proposition-detail-title">Autores</h4>
+        <div class="proposition-detail-text">${autores.map(a => escapeHTML(a.nome)).filter(Boolean).join(', ')}</div>
+      </div>
+    ` : '';
+
+    const inteiroTeor = detalhe.urlInteiroTeor
+      ? `<a class="btn-load-more" href="${escapeHTML(detalhe.urlInteiroTeor)}" target="_blank" rel="noopener noreferrer">📄 Inteiro teor (PDF)</a>`
+      : `<a class="btn-load-more" href="${camaraFichaURL(id)}" target="_blank" rel="noopener noreferrer">Ver no portal da Câmara</a>`;
+
+    return `
+      <div class="proposition-detail-section">
+        <h4 class="proposition-detail-title">Ementa detalhada</h4>
+        <div class="proposition-detail-text">${ementa}</div>
+      </div>
+      ${keywords ? `
+        <div class="proposition-detail-section">
+          <h4 class="proposition-detail-title">Palavras-chave</h4>
+          <div class="keyword-list">${keywords}</div>
+        </div>
+      ` : ''}
+      ${statusBlock}
+      <div class="proposition-detail-section">
+        <h4 class="proposition-detail-title">Últimas tramitações</h4>
+        ${tramitacoesBlock}
+      </div>
+      ${autoresBlock}
+      <div class="proposition-detail-actions">${inteiroTeor}</div>
     `;
   }
 
@@ -371,6 +472,16 @@ const Components = (() => {
     // Fallback: capitalize first word
     return type.split(' ').slice(0, 2).join(' ').toLowerCase()
       .replace(/^\w/, c => c.toUpperCase());
+  }
+
+  function escapeHTML(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function formatCNPJ(value) {
@@ -563,6 +674,10 @@ const Components = (() => {
     deputyModal,
     expenseList,
     expenseListControls,
+    propositionItem,
+    propositionDetail,
+    propositionDetailSkeleton,
+    propositionDetailError,
     animateCounters,
     animateValue,
     renderExpenseChart,

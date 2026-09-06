@@ -407,6 +407,98 @@ const API = (() => {
     return response.dados || [];
   }
 
+  // --- Proposition details (on demand, cached 24h) ---
+  const PROP_TTL = 24 * 60 * 60 * 1000;
+
+  function propStorageKey(id) {
+    return `rp:prop:${id}`;
+  }
+
+  function readPropStorage(id) {
+    try {
+      const raw = localStorage.getItem(propStorageKey(id));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.ts !== 'number' || Date.now() - parsed.ts >= PROP_TTL) return null;
+      return parsed.data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writePropStorage(id, data) {
+    try {
+      localStorage.setItem(propStorageKey(id), JSON.stringify({ ts: Date.now(), data }));
+    } catch (e) {
+      console.warn('Failed to save proposition to LocalStorage:', e);
+    }
+  }
+
+  /**
+   * Get proposition details
+   * @param {number} id
+   * @returns {Promise<Object>}
+   */
+  async function getProposicaoDetalhe(id) {
+    const response = await fetchJSON(buildURL(`/proposicoes/${id}`));
+    return response.dados;
+  }
+
+  /**
+   * Get proposition tramitações (newest first)
+   * @param {number} id
+   * @returns {Promise<Array>}
+   */
+  async function getProposicaoTramitacoes(id) {
+    const response = await fetchJSON(buildURL(`/proposicoes/${id}/tramitacoes`));
+    const tramitacoes = response.dados || [];
+    return [...tramitacoes].sort((a, b) => String(b.dataHora || '').localeCompare(String(a.dataHora || '')));
+  }
+
+  /**
+   * Get proposition authors
+   * @param {number} id
+   * @returns {Promise<Array>}
+   */
+  async function getProposicaoAutores(id) {
+    const response = await fetchJSON(buildURL(`/proposicoes/${id}/autores`));
+    return response.dados || [];
+  }
+
+  /**
+   * Get proposition detail + tramitações + authors, tolerating partial failures
+   * @param {number} id
+   * @returns {Promise<{detalhe: Object|null, tramitacoes: Array, autores: Array, erros: Array}>}
+   */
+  async function getProposicaoDetalheCompleto(id) {
+    const stored = readPropStorage(id);
+    if (stored) return stored;
+
+    const [detalhe, tramitacoes, autores] = await Promise.allSettled([
+      getProposicaoDetalhe(id),
+      getProposicaoTramitacoes(id),
+      getProposicaoAutores(id),
+    ]);
+
+    const erros = [detalhe, tramitacoes, autores]
+      .filter(r => r.status === 'rejected')
+      .map(r => (r.reason && r.reason.message) || 'Erro desconhecido');
+
+    if (detalhe.status === 'rejected') {
+      throw new Error(erros[0]);
+    }
+
+    const result = {
+      detalhe: detalhe.value,
+      tramitacoes: tramitacoes.status === 'fulfilled' ? tramitacoes.value : [],
+      autores: autores.status === 'fulfilled' ? autores.value : [],
+      erros,
+    };
+
+    writePropStorage(id, result);
+    return result;
+  }
+
   /**
    * Get expense type reference data
    * @returns {Promise<Array>}
@@ -493,6 +585,10 @@ const API = (() => {
     sortDespesasDesc,
     getDeputadoProposicoes,
     getProposicoes,
+    getProposicaoDetalhe,
+    getProposicaoTramitacoes,
+    getProposicaoAutores,
+    getProposicaoDetalheCompleto,
     getTiposDespesa,
     getPartidos,
     getFotoURL,
