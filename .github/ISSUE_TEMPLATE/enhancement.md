@@ -29,6 +29,21 @@ assignees: []
 
 ---
 
+## 🏛️ Valor para o Cidadão
+
+<!-- Como essa melhoria ajuda o cidadão a fiscalizar melhor seus representantes? -->
+
+
+---
+
+## 🌐 Fonte de Dados
+
+<!-- O app é 100% client-side: informe a API pública com CORS liberado (URL/endpoint) que fornece os dados necessários. Sem backend próprio nem chaves de API. -->
+
+- API / endpoint:
+
+---
+
 ## 🔄 Alternativas Consideradas
 
 <!-- Existem outras abordagens que você avaliou? Por que a solução proposta é preferível? -->
