@@ -21,6 +21,15 @@ const App = (() => {
     },
     loading: true,
     modalOpen: false,
+    modal: {
+      deputyId: null,
+      details: null,
+      propositions: [],
+      expensesAll: [],
+      expensesVisible: 20,
+      expensesPageSize: 20,
+      failedYears: [],
+    },
   };
 
   // ==========================================
@@ -173,50 +182,25 @@ const App = (() => {
       // Fetch details first (critical — if this fails, show error)
       const details = await API.getDeputadoDetalhes(deputyId);
 
-      // Fetch expense years sequentially to avoid hammering rate limits
-      const currentYear = new Date().getFullYear();
-      const legislatureYears = [];
-      for (let y = 2023; y <= currentYear; y++) legislatureYears.push(y);
-
-      let allExpenses = [];
-      let failedYears = [];
-      for (const year of legislatureYears) {
-        try {
-          const yearExpenses = await API.getAllDespesas(deputyId, year);
-          allExpenses = allExpenses.concat(yearExpenses);
-        } catch (err) {
-          console.warn(`Falha ao carregar despesas de ${year}:`, err.message);
-          failedYears.push(year);
-        }
-      }
-
-      // Normalize valorLiquido: the API sometimes returns it as a string
-      const expensesRaw = allExpenses.map(e => ({
-        ...e,
-        valorLiquido: parseFloat(e.valorLiquido) || 0,
-      }));
+      // Expense years are loaded sequentially to avoid hammering rate limits
+      const { expenses, failedYears } = await API.getAllDespesasLegislatura(deputyId, {
+        from: 2023,
+        to: new Date().getFullYear(),
+      });
 
       const propositions = await API.getDeputadoProposicoes(deputyId).catch(err => ({ error: true, message: err.message }));
 
-      const warningBanner = failedYears.length > 0 ? `
-        <div class="error-banner" style="margin:1rem 1rem 0;padding:0.6rem 1rem;font-size:var(--fs-xs)">
-          ⚠️ Não foi possível carregar despesas de ${failedYears.join(', ')} (limite de requisições ou falha de rede). Os totais podem estar incompletos.
-        </div>
-      ` : '';
+      state.modal = {
+        deputyId,
+        details,
+        propositions,
+        expensesAll: expenses,
+        expensesVisible: state.modal.expensesPageSize,
+        expensesPageSize: state.modal.expensesPageSize,
+        failedYears,
+      };
 
-      $modal.innerHTML = `
-        <button class="modal-close" id="modal-close-btn">✕</button>
-        ${warningBanner}
-        ${Components.deputyModal(details, expensesRaw, propositions)}
-      `;
-
-      // Render chart
-      setTimeout(() => {
-        Components.renderExpenseChart('expense-chart', expensesRaw);
-      }, 100);
-
-      // Bind tab switching
-      bindModalTabs();
+      renderModal();
     } catch (err) {
       console.error('Error loading deputy profile:', err);
       $modal.innerHTML = `
@@ -227,6 +211,89 @@ const App = (() => {
         </div>
       `;
     }
+  }
+
+  function renderModal() {
+    const { details, propositions, expensesAll, expensesVisible, failedYears } = state.modal;
+
+    const warningBanner = failedYears.length > 0 ? `
+      <div class="error-banner" id="expenses-warning" style="margin:1rem 1rem 0;padding:0.6rem 1rem;font-size:var(--fs-xs)">
+        ⚠️ Não foi possível carregar despesas de ${failedYears.join(', ')} (limite de requisições ou falha de rede). Os totais podem estar incompletos.
+        <button class="btn-load-more" id="expenses-retry" type="button">Tentar novamente</button>
+      </div>
+    ` : '';
+
+    $modal.innerHTML = `
+      <button class="modal-close" id="modal-close-btn">✕</button>
+      ${warningBanner}
+      ${Components.deputyModal(details, expensesAll, propositions, expensesVisible)}
+    `;
+
+    // Render chart
+    setTimeout(() => {
+      Components.renderExpenseChart('expense-chart', expensesAll);
+    }, 100);
+
+    // Bind tab switching
+    bindModalTabs();
+  }
+
+  // Re-renders only the expense list + controls (keeps the Chart.js canvas intact)
+  function renderExpenseList() {
+    const { expensesAll, expensesVisible } = state.modal;
+    const $list = document.getElementById('expense-list');
+    const $controls = document.getElementById('expense-list-controls');
+    if (!$list || !$controls) return;
+
+    const shown = Math.min(expensesVisible, expensesAll.length);
+    $list.innerHTML = Components.expenseList(expensesAll, shown);
+    $controls.innerHTML = Components.expenseListControls(shown, expensesAll.length);
+  }
+
+  function loadMoreExpenses() {
+    const m = state.modal;
+    m.expensesVisible = Math.min(m.expensesVisible + m.expensesPageSize, m.expensesAll.length);
+    renderExpenseList();
+  }
+
+  function showAllExpenses() {
+    const m = state.modal;
+    const CHUNK = 100;
+    const $showAll = document.getElementById('expenses-show-all');
+    const $loadMore = document.getElementById('expenses-load-more');
+    if ($showAll) { $showAll.disabled = true; $showAll.classList.add('is-loading'); }
+    if ($loadMore) $loadMore.disabled = true;
+
+    const $list = document.getElementById('expense-list');
+    const step = () => {
+      if (!$list || !$list.isConnected || !state.modalOpen) return;
+      const next = Math.min(m.expensesVisible + CHUNK, m.expensesAll.length);
+      $list.insertAdjacentHTML('beforeend', Components.expenseList(m.expensesAll.slice(m.expensesVisible, next)));
+      m.expensesVisible = next;
+      if (m.expensesVisible < m.expensesAll.length) {
+        requestAnimationFrame(step);
+      } else {
+        const $controls = document.getElementById('expense-list-controls');
+        if ($controls) $controls.innerHTML = Components.expenseListControls(m.expensesVisible, m.expensesAll.length);
+      }
+    };
+    requestAnimationFrame(step);
+  }
+
+  async function retryFailedYears() {
+    const m = state.modal;
+    if (!m.failedYears.length || !m.deputyId) return;
+    const $retry = document.getElementById('expenses-retry');
+    if ($retry) { $retry.disabled = true; $retry.classList.add('is-loading'); }
+
+    const deputyId = m.deputyId;
+    const { expenses, failedYears } = await API.getAllDespesasLegislatura(deputyId, { years: m.failedYears });
+    if (state.modal.deputyId !== deputyId || !state.modalOpen) return;
+
+    m.expensesAll = API.sortDespesasDesc(m.expensesAll.concat(expenses));
+    m.failedYears = failedYears;
+    m.expensesVisible = Math.max(m.expensesVisible, m.expensesPageSize);
+    renderModal();
   }
 
   function closeModal() {
@@ -274,6 +341,14 @@ const App = (() => {
         closeModal();
         return;
       }
+
+      // Expense list controls
+      const loadMoreBtn = e.target.closest('#expenses-load-more');
+      if (loadMoreBtn && !loadMoreBtn.disabled) { loadMoreExpenses(); return; }
+      const showAllBtn = e.target.closest('#expenses-show-all');
+      if (showAllBtn && !showAllBtn.disabled) { showAllExpenses(); return; }
+      const retryBtn = e.target.closest('#expenses-retry');
+      if (retryBtn && !retryBtn.disabled) { retryFailedYears(); return; }
 
       // Pagination
       const pageBtn = e.target.closest('.page-btn');
