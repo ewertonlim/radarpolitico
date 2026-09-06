@@ -1,5 +1,7 @@
 # radarpolitico
 
+Atualização de teste do fluxo de publicação via pull request.
+
 ## Testes
 
 ```bash
