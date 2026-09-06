@@ -29,6 +29,8 @@ const App = (() => {
       expensesVisible: 20,
       expensesPageSize: 20,
       failedYears: [],
+      expandedPropId: null,
+      propDetails: {},
     },
   };
 
@@ -198,6 +200,8 @@ const App = (() => {
         expensesVisible: state.modal.expensesPageSize,
         expensesPageSize: state.modal.expensesPageSize,
         failedYears,
+        expandedPropId: null,
+        propDetails: {},
       };
 
       renderModal();
@@ -296,6 +300,58 @@ const App = (() => {
     renderModal();
   }
 
+  // ==========================================
+  // Proposition details (accordion)
+  // ==========================================
+  async function togglePropositionDetail(propId, { force = false } = {}) {
+    const m = state.modal;
+    const $item = $modal.querySelector(`.proposition-item[data-prop-id="${propId}"]`);
+    if (!$item) return;
+    const $panel = $item.querySelector('.proposition-detail');
+    if (!$panel) return;
+
+    if (m.expandedPropId === propId && !force) {
+      collapseProposition($item, $panel);
+      m.expandedPropId = null;
+      return;
+    }
+
+    if (m.expandedPropId !== null && m.expandedPropId !== propId) {
+      const $previous = $modal.querySelector(`.proposition-item[data-prop-id="${m.expandedPropId}"]`);
+      if ($previous) collapseProposition($previous, $previous.querySelector('.proposition-detail'));
+    }
+
+    m.expandedPropId = propId;
+    $item.classList.add('is-expanded');
+    $item.setAttribute('aria-expanded', 'true');
+    $panel.hidden = false;
+
+    const cached = m.propDetails[propId];
+    if (cached && !force) {
+      $panel.innerHTML = Components.propositionDetail(cached);
+      return;
+    }
+
+    $panel.innerHTML = Components.propositionDetailSkeleton();
+
+    try {
+      const data = await API.getProposicaoDetalheCompleto(propId);
+      if (!state.modalOpen || state.modal.expandedPropId !== propId) return;
+      state.modal.propDetails[propId] = data;
+      $panel.innerHTML = Components.propositionDetail(data);
+    } catch (err) {
+      console.warn('Falha ao carregar detalhes da proposição:', err.message);
+      if (!state.modalOpen || state.modal.expandedPropId !== propId) return;
+      $panel.innerHTML = Components.propositionDetailError(propId);
+    }
+  }
+
+  function collapseProposition($item, $panel) {
+    $item.classList.remove('is-expanded');
+    $item.setAttribute('aria-expanded', 'false');
+    if ($panel) $panel.hidden = true;
+  }
+
   function closeModal() {
     if (!$modalOverlay) return;
     state.modalOpen = false;
@@ -350,6 +406,20 @@ const App = (() => {
       const retryBtn = e.target.closest('#expenses-retry');
       if (retryBtn && !retryBtn.disabled) { retryFailedYears(); return; }
 
+      // Proposition details
+      const propRetryBtn = e.target.closest('.prop-retry');
+      if (propRetryBtn) {
+        const id = parseInt(propRetryBtn.dataset.propId);
+        if (id) togglePropositionDetail(id, { force: true });
+        return;
+      }
+      const propItem = e.target.closest('.proposition-item[data-prop-id]');
+      if (propItem && !e.target.closest('a')) {
+        const id = parseInt(propItem.dataset.propId);
+        if (id) togglePropositionDetail(id);
+        return;
+      }
+
       // Pagination
       const pageBtn = e.target.closest('.page-btn');
       if (pageBtn && !pageBtn.disabled) {
@@ -376,6 +446,14 @@ const App = (() => {
         if (card) {
           const id = parseInt(card.dataset.deputyId);
           if (id) openDeputyModal(id);
+        }
+      }
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        const propItem = e.target.closest('.proposition-item[data-prop-id]');
+        if (propItem) {
+          e.preventDefault();
+          const id = parseInt(propItem.dataset.propId);
+          if (id) togglePropositionDetail(id);
         }
       }
     });
