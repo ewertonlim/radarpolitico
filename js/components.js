@@ -176,7 +176,7 @@ const Components = (() => {
   // ==========================================
   // Deputy Modal / Profile
   // ==========================================
-  function deputyModal(deputy, expenses = [], propositions = []) {
+  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20) {
     const photoUrl = deputy.urlFoto || API.getFotoURL(deputy.id);
     const totalExpense = expenses.reduce((sum, e) => sum + (e.valorLiquido || 0), 0);
 
@@ -258,11 +258,14 @@ const Components = (() => {
           ` : ''}
 
           <h3 style="font-size:var(--fs-md);margin-bottom:var(--space-md);color:var(--text-secondary)">
-            Despesas Recentes (57ª Legislatura)
+            Despesas (57ª Legislatura) — mais recentes primeiro
           </h3>
-          <ul class="expense-list">
-            ${expenses.slice(0, 20).map(expenseItem).join('')}
+          <ul class="expense-list" id="expense-list" aria-live="polite">
+            ${expenseList(expenses, visibleCount)}
           </ul>
+          <div id="expense-list-controls">
+            ${expenseListControls(Math.min(visibleCount, expenses.length), expenses.length)}
+          </div>
           ${expenses.length === 0 ? '<div class="empty-state"><div class="empty-state-icon">📭</div><div class="empty-state-text">Nenhuma despesa encontrada para este período.</div></div>' : ''}
         </div>
 
@@ -279,6 +282,31 @@ const Components = (() => {
             </ul>
             ${propositions.length === 0 ? '<div class="empty-state"><div class="empty-state-icon">📄</div><div class="empty-state-text">Nenhuma proposição encontrada.</div></div>' : ''}
           `}
+        </div>
+      </div>
+    `;
+  }
+
+  function expenseList(expenses = [], visibleCount = expenses.length) {
+    return expenses.slice(0, visibleCount).map(expenseItem).join('');
+  }
+
+  function expenseListControls(shown, total) {
+    if (total === 0) return '';
+    if (shown >= total) {
+      return `
+        <div class="expense-list-controls">
+          <span class="expense-list-counter">Exibindo ${total} de ${total} despesas</span>
+          ${total > 20 ? '<span class="expense-list-done">Todas as despesas exibidas</span>' : ''}
+        </div>
+      `;
+    }
+    return `
+      <div class="expense-list-controls">
+        <span class="expense-list-counter">Exibindo ${shown} de ${total} despesas</span>
+        <div class="expense-list-buttons">
+          <button class="btn-load-more" id="expenses-load-more" type="button">Carregar mais</button>
+          <button class="btn-load-more" id="expenses-show-all" type="button">Ver todas (${total})</button>
         </div>
       </div>
     `;
@@ -533,6 +561,8 @@ const Components = (() => {
     statsRow,
     rankingTable,
     deputyModal,
+    expenseList,
+    expenseListControls,
     animateCounters,
     animateValue,
     renderExpenseChart,

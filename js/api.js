@@ -241,18 +241,82 @@ const API = (() => {
    */
   // Cache for consolidated expenses per deputy+year
   const despesasCache = new Map();
+  const DESPESAS_TTL_CLOSED_YEAR = 24 * 60 * 60 * 1000;
+  const DESPESAS_TTL_CURRENT_YEAR = 6 * 60 * 60 * 1000;
+
+  function despesasStorageKey(id, year) {
+    return `rp_despesas_${id}_${year}`;
+  }
+
+  function despesasTTL(year) {
+    return year < new Date().getFullYear() ? DESPESAS_TTL_CLOSED_YEAR : DESPESAS_TTL_CURRENT_YEAR;
+  }
+
+  function isDespesasEntryFresh(entry, year) {
+    return !!entry && Array.isArray(entry.data) && typeof entry.ts === 'number'
+      && Date.now() - entry.ts < despesasTTL(year);
+  }
+
+  function readDespesasStorage(id, year) {
+    try {
+      const raw = localStorage.getItem(despesasStorageKey(id, year));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!isDespesasEntryFresh(parsed, year)) return null;
+      return parsed;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeDespesasStorage(id, year, entry) {
+    try {
+      localStorage.setItem(despesasStorageKey(id, year), JSON.stringify(entry));
+    } catch (e) {
+      console.warn('Failed to save expenses to LocalStorage:', e);
+    }
+  }
+
+  function normalizeDespesa(e) {
+    return {
+      ...e,
+      valorLiquido: parseFloat(e.valorLiquido) || 0,
+      dataDocumento: e.dataDocumento ? String(e.dataDocumento).slice(0, 10) : null,
+    };
+  }
+
+  /**
+   * Sort expenses newest first (dataDocumento DESC, tie-break codDocumento DESC)
+   * @param {Array} expenses
+   * @returns {Array} new sorted array
+   */
+  function sortDespesasDesc(expenses) {
+    return [...expenses].sort((a, b) => {
+      const da = a.dataDocumento || '';
+      const db = b.dataDocumento || '';
+      if (da !== db) return da < db ? 1 : -1;
+      return (Number(b.codDocumento) || 0) - (Number(a.codDocumento) || 0);
+    });
+  }
 
   async function getAllDespesas(id, ano) {
     const year = ano || new Date().getFullYear();
     const cacheKey = `despesas_${id}_${year}`;
 
-    if (despesasCache.has(cacheKey)) {
-      return despesasCache.get(cacheKey);
+    const cached = despesasCache.get(cacheKey);
+    if (isDespesasEntryFresh(cached, year)) {
+      return cached.data;
+    }
+    despesasCache.delete(cacheKey);
+
+    const stored = readDespesasStorage(id, year);
+    if (stored) {
+      despesasCache.set(cacheKey, stored);
+      return stored.data;
     }
 
     const first = await getDeputadoDespesas(id, year, 1, 100);
-    // Normalize: valorLiquido can come as string from the API
-    let all = first.dados.map(e => ({ ...e, valorLiquido: parseFloat(e.valorLiquido) || 0 }));
+    let all = first.dados.map(normalizeDespesa);
 
     const lastLink = first.links?.find(l => l.rel === 'last');
     if (lastLink) {
@@ -267,14 +331,47 @@ const API = (() => {
         }
         const results = await Promise.all(promises);
         results.forEach(r => {
-          const normalized = r.dados.map(e => ({ ...e, valorLiquido: parseFloat(e.valorLiquido) || 0 }));
-          all = all.concat(normalized);
+          all = all.concat(r.dados.map(normalizeDespesa));
         });
       }
     }
 
-    despesasCache.set(cacheKey, all);
+    const entry = { ts: Date.now(), data: all };
+    despesasCache.set(cacheKey, entry);
+    writeDespesasStorage(id, year, entry);
     return all;
+  }
+
+  /**
+   * Get ALL expenses for a deputy across the legislature (years loaded sequentially)
+   * @param {number} id
+   * @param {Object} [options]
+   * @param {number} [options.from=2023]
+   * @param {number} [options.to=currentYear]
+   * @param {number[]} [options.years] - explicit list of years (overrides from/to)
+   * @returns {Promise<{expenses: Array, failedYears: number[]}>} expenses sorted newest first
+   */
+  async function getAllDespesasLegislatura(id, options = {}) {
+    const from = options.from || 2023;
+    const to = options.to || new Date().getFullYear();
+    let years = options.years;
+    if (!Array.isArray(years)) {
+      years = [];
+      for (let y = from; y <= to; y++) years.push(y);
+    }
+
+    let expenses = [];
+    const failedYears = [];
+    for (const year of years) {
+      try {
+        expenses = expenses.concat(await getAllDespesas(id, year));
+      } catch (err) {
+        console.warn(`Falha ao carregar despesas de ${year}:`, err.message);
+        failedYears.push(year);
+      }
+    }
+
+    return { expenses: sortDespesasDesc(expenses), failedYears };
   }
 
   /**
@@ -392,6 +489,8 @@ const API = (() => {
     getDeputadoDetalhes,
     getDeputadoDespesas,
     getAllDespesas,
+    getAllDespesasLegislatura,
+    sortDespesasDesc,
     getDeputadoProposicoes,
     getProposicoes,
     getTiposDespesa,
