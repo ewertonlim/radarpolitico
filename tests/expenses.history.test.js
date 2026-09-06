@@ -68,6 +68,35 @@ describe('Expense history (API)', () => {
     await expect(API.getAllDespesas(1, 2023)).resolves.toEqual([{ codDocumento: 3 }]);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it('expires the in-memory cache using the year-specific TTL', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00Z'));
+    const API = loadAPI();
+    fetch.mockImplementation(async () => okResponse([{ codDocumento: 1, valorLiquido: '5', dataDocumento: '2026-05-01' }]));
+    const load = async (year) => {
+      const p = API.getAllDespesas(1, year);
+      await vi.runAllTimersAsync();
+      return p;
+    };
+
+    await load(2026);
+    await load(2026);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(new Date('2026-06-01T18:00:01Z'));
+    await load(2026);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    await load(2025);
+    vi.setSystemTime(new Date('2026-06-02T12:00:00Z'));
+    await load(2025);
+    expect(fetch).toHaveBeenCalledTimes(3);
+
+    vi.setSystemTime(new Date('2026-06-02T18:00:02Z'));
+    await load(2025);
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
 });
 
 describe('Expense history (UI)', () => {

@@ -248,23 +248,30 @@ const API = (() => {
     return `rp_despesas_${id}_${year}`;
   }
 
+  function despesasTTL(year) {
+    return year < new Date().getFullYear() ? DESPESAS_TTL_CLOSED_YEAR : DESPESAS_TTL_CURRENT_YEAR;
+  }
+
+  function isDespesasEntryFresh(entry, year) {
+    return !!entry && Array.isArray(entry.data) && typeof entry.ts === 'number'
+      && Date.now() - entry.ts < despesasTTL(year);
+  }
+
   function readDespesasStorage(id, year) {
     try {
       const raw = localStorage.getItem(despesasStorageKey(id, year));
       if (!raw) return null;
       const parsed = JSON.parse(raw);
-      if (!parsed || !Array.isArray(parsed.data) || typeof parsed.ts !== 'number') return null;
-      const ttl = year < new Date().getFullYear() ? DESPESAS_TTL_CLOSED_YEAR : DESPESAS_TTL_CURRENT_YEAR;
-      if (Date.now() - parsed.ts >= ttl) return null;
-      return parsed.data;
+      if (!isDespesasEntryFresh(parsed, year)) return null;
+      return parsed;
     } catch (e) {
       return null;
     }
   }
 
-  function writeDespesasStorage(id, year, data) {
+  function writeDespesasStorage(id, year, entry) {
     try {
-      localStorage.setItem(despesasStorageKey(id, year), JSON.stringify({ ts: Date.now(), data }));
+      localStorage.setItem(despesasStorageKey(id, year), JSON.stringify(entry));
     } catch (e) {
       console.warn('Failed to save expenses to LocalStorage:', e);
     }
@@ -296,14 +303,16 @@ const API = (() => {
     const year = ano || new Date().getFullYear();
     const cacheKey = `despesas_${id}_${year}`;
 
-    if (despesasCache.has(cacheKey)) {
-      return despesasCache.get(cacheKey);
+    const cached = despesasCache.get(cacheKey);
+    if (isDespesasEntryFresh(cached, year)) {
+      return cached.data;
     }
+    despesasCache.delete(cacheKey);
 
     const stored = readDespesasStorage(id, year);
     if (stored) {
       despesasCache.set(cacheKey, stored);
-      return stored;
+      return stored.data;
     }
 
     const first = await getDeputadoDespesas(id, year, 1, 100);
@@ -327,8 +336,9 @@ const API = (() => {
       }
     }
 
-    despesasCache.set(cacheKey, all);
-    writeDespesasStorage(id, year, all);
+    const entry = { ts: Date.now(), data: all };
+    despesasCache.set(cacheKey, entry);
+    writeDespesasStorage(id, year, entry);
     return all;
   }
 
