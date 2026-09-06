@@ -41,6 +41,10 @@ assignees: []
 
 <!-- Se aplicável, adicione prints ou gravações de tela para ilustrar o problema. -->
 
+- Print da tela:
+- Erros no console do navegador (F12 → Console):
+- Erro/resposta da API da Câmara (F12 → Network), se houver:
+
 
 ---
 
@@ -49,7 +53,7 @@ assignees: []
 | Campo              | Valor             |
 |--------------------|-------------------|
 | Navegador          | <!-- ex: Chrome 126 --> |
-| Sistema Operacional | <!-- ex: Windows 11 --> |
+| Sistema Operacional / Dispositivo | <!-- ex: Windows 11, iPhone 15 --> |
 | Versão / Branch    | <!-- ex: main, v1.2.0 --> |
 | URL da Página      | <!-- ex: /parlamentar/123/gastos --> |
 
