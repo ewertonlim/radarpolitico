@@ -31,6 +31,15 @@ const App = (() => {
       failedYears: [],
       expandedPropId: null,
       propDetails: {},
+      votes: {
+        items: [],
+        cursorDate: null,
+        loading: false,
+        error: null,
+        exhausted: false,
+        loaded: false,
+        progress: null,
+      },
     },
   };
 
@@ -202,6 +211,15 @@ const App = (() => {
         failedYears,
         expandedPropId: null,
         propDetails: {},
+        votes: {
+          items: [],
+          cursorDate: null,
+          loading: false,
+          error: null,
+          exhausted: false,
+          loaded: false,
+          progress: null,
+        },
       };
 
       renderModal();
@@ -218,7 +236,8 @@ const App = (() => {
   }
 
   function renderModal() {
-    const { details, propositions, expensesAll, expensesVisible, failedYears } = state.modal;
+    const activeTab = $modal.querySelector('.modal-tab.active')?.dataset.tab;
+    const { details, propositions, expensesAll, expensesVisible, failedYears, votes } = state.modal;
 
     const warningBanner = failedYears.length > 0 ? `
       <div class="error-banner" id="expenses-warning" style="margin:1rem 1rem 0;padding:0.6rem 1rem;font-size:var(--fs-xs)">
@@ -230,7 +249,7 @@ const App = (() => {
     $modal.innerHTML = `
       <button class="modal-close" id="modal-close-btn">✕</button>
       ${warningBanner}
-      ${Components.deputyModal(details, expensesAll, propositions, expensesVisible)}
+      ${Components.deputyModal(details, expensesAll, propositions, expensesVisible, votes)}
     `;
 
     // Render chart
@@ -240,6 +259,7 @@ const App = (() => {
 
     // Bind tab switching
     bindModalTabs();
+    if (activeTab && activeTab !== 'expenses') activateTab(activeTab);
   }
 
   // Re-renders only the expense list + controls (keeps the Chart.js canvas intact)
@@ -283,6 +303,68 @@ const App = (() => {
     };
     requestAnimationFrame(step);
   }
+
+  // ==========================================
+  // Votes tab (lazy loading, month-by-month)
+  // ==========================================
+  function renderVotesPanel() {
+    const $panel = document.getElementById('tab-votes');
+    if (!$panel) return;
+    $panel.innerHTML = Components.votesPanel(state.modal.votes);
+  }
+
+  async function fetchVotesWindow(deputyId, window) {
+    const v = state.modal.votes;
+    v.loading = true;
+    v.error = null;
+    v.progress = null;
+    renderVotesPanel();
+
+    try {
+      const items = await API.getVotosDeputadoPeriodo(
+        deputyId,
+        window.dataInicio,
+        window.dataFim,
+        (done, total) => {
+          if (!state.modalOpen || state.modal.deputyId !== deputyId) return;
+          state.modal.votes.progress = `Analisando ${done} de ${total} votações...`;
+          const $progress = document.getElementById('votes-progress');
+          if ($progress) $progress.textContent = state.modal.votes.progress;
+        },
+      );
+      if (!state.modalOpen || state.modal.deputyId !== deputyId) return;
+
+      v.items = v.items.concat(items);
+      v.loaded = true;
+      v.progress = null;
+      v.cursorDate = API.previousMonth(window.dataInicio);
+      v.exhausted = v.cursorDate < API.VOTES_MIN_DATE;
+    } catch (err) {
+      if (!state.modalOpen || state.modal.deputyId !== deputyId) return;
+      v.error = err.message;
+      v.progress = null;
+    } finally {
+      if (state.modalOpen && state.modal.deputyId === deputyId) {
+        v.loading = false;
+        renderVotesPanel();
+      }
+    }
+  }
+
+  function loadVotes() {
+    const v = state.modal.votes;
+    const deputyId = state.modal.deputyId;
+    if (!deputyId || v.loading) return;
+
+    if (!v.cursorDate) {
+      const now = new Date();
+      v.cursorDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    }
+
+    return fetchVotesWindow(deputyId, API.voteMonthWindow(v.cursorDate));
+  }
+
+  const loadMoreVotes = loadVotes;
 
   async function retryFailedYears() {
     const m = state.modal;
@@ -359,19 +441,28 @@ const App = (() => {
     document.body.style.overflow = '';
   }
 
+  function activateTab(name) {
+    const tab = $modal.querySelector(`.modal-tab[data-tab="${name}"]`);
+    const panel = $modal.querySelector(`#tab-${name}`);
+    if (!tab || !panel) return;
+
+    $modal.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+    $modal.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    panel.classList.add('active');
+  }
+
   function bindModalTabs() {
     const tabs = $modal.querySelectorAll('.modal-tab');
     tabs.forEach(tab => {
       tab.addEventListener('click', () => {
-        tabs.forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
+        activateTab(tab.dataset.tab);
 
-        const panels = $modal.querySelectorAll('.tab-panel');
-        panels.forEach(p => p.classList.remove('active'));
-
-        const targetId = `tab-${tab.dataset.tab}`;
-        const targetPanel = document.getElementById(targetId);
-        if (targetPanel) targetPanel.classList.add('active');
+        if (tab.dataset.tab === 'votes'
+            && !state.modal.votes.loaded
+            && !state.modal.votes.loading) {
+          loadVotes();
+        }
       });
     });
   }
@@ -405,6 +496,12 @@ const App = (() => {
       if (showAllBtn && !showAllBtn.disabled) { showAllExpenses(); return; }
       const retryBtn = e.target.closest('#expenses-retry');
       if (retryBtn && !retryBtn.disabled) { retryFailedYears(); return; }
+
+      // Votes panel controls
+      const votesLoadMoreBtn = e.target.closest('#votes-load-more');
+      if (votesLoadMoreBtn && !votesLoadMoreBtn.disabled) { loadMoreVotes(); return; }
+      const votesRetryBtn = e.target.closest('#votes-retry');
+      if (votesRetryBtn && !votesRetryBtn.disabled) { loadVotes(); return; }
 
       // Proposition details
       const propRetryBtn = e.target.closest('.prop-retry');

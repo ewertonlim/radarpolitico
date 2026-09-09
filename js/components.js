@@ -176,7 +176,7 @@ const Components = (() => {
   // ==========================================
   // Deputy Modal / Profile
   // ==========================================
-  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20) {
+  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20, votes = null) {
     const photoUrl = deputy.urlFoto || API.getFotoURL(deputy.id);
     const totalExpense = expenses.reduce((sum, e) => sum + (e.valorLiquido || 0), 0);
 
@@ -219,6 +219,7 @@ const Components = (() => {
       <div class="modal-tabs">
         <button class="modal-tab active" data-tab="expenses">💰 Gastos</button>
         <button class="modal-tab" data-tab="propositions">📋 Proposições</button>
+        <button class="modal-tab" data-tab="votes">🗳️ Votações</button>
       </div>
 
       <div class="modal-content">
@@ -283,6 +284,9 @@ const Components = (() => {
             ${propositions.length === 0 ? '<div class="empty-state"><div class="empty-state-icon">📄</div><div class="empty-state-text">Nenhuma proposição encontrada.</div></div>' : ''}
           `}
         </div>
+
+        <!-- VOTES TAB -->
+        <div class="tab-panel" id="tab-votes">${votesPanel(votes)}</div>
       </div>
     `;
   }
@@ -351,6 +355,121 @@ const Components = (() => {
         <div class="skeleton skeleton-line w-40"></div>
       </div>
     `;
+  }
+
+  // ==========================================
+  // Votes (Plenário) tab
+  // ==========================================
+  function voteBadge(tipoVoto) {
+    const text = String(tipoVoto ?? '');
+    let variant = 'vote-neutral';
+    if (text === 'Sim') variant = 'vote-yes';
+    else if (text === 'Não') variant = 'vote-no';
+    else if (text === 'Abstenção' || text === 'Artigo 17') variant = 'vote-abstain';
+    else if (text === 'Obstrução') variant = 'vote-obstruction';
+    return `<span class="vote-badge ${variant}">${escapeHTML(text || '—')}</span>`;
+  }
+
+  function voteCard(item) {
+    const p = item.proposicao;
+    const title = p
+      ? `${escapeHTML(p.sigla)} ${escapeHTML(p.numero)}/${escapeHTML(p.ano)}`
+      : escapeHTML(item.descricao || 'Votação');
+
+    const ementaFull = (p && p.ementa) ? String(p.ementa) : '';
+    const ementa = ementaFull.length > 160
+      ? ementaFull.slice(0, 157).trimEnd() + '…'
+      : ementaFull;
+
+    const dataHora = item.dataHoraRegistro
+      ? new Date(item.dataHoraRegistro).toLocaleString('pt-BR', {
+          day: '2-digit', month: '2-digit', year: 'numeric',
+          hour: '2-digit', minute: '2-digit',
+        })
+      : '—';
+
+    return `
+      <li class="vote-card">
+        <div class="vote-card-header">
+          <span class="vote-card-title">${title}</span>
+          ${voteBadge(item.voto)}
+        </div>
+        ${ementa ? `<div class="vote-card-ementa">${escapeHTML(ementa)}</div>` : ''}
+        <div class="vote-card-meta">
+          <span>🗓️ ${dataHora}</span>
+          ${item.idEvento ? `<a href="https://www.camara.leg.br/evento-legislativo/${escapeHTML(item.idEvento)}" target="_blank" rel="noopener">Ver na Câmara</a>` : ''}
+        </div>
+      </li>
+    `;
+  }
+
+  function voteList(items = []) {
+    return `<ul class="vote-list">${items.map(voteCard).join('')}</ul>`;
+  }
+
+  function voteListSkeleton() {
+    const block = `
+      <div class="skeleton-card" style="margin-bottom:var(--space-md)">
+        <div class="skeleton skeleton-line w-60" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line w-30"></div>
+      </div>
+    `;
+    return `<div class="vote-list-skeleton">${block.repeat(3)}</div>`;
+  }
+
+  function voteListControls({ loading = false, exhausted = false, error = null, progress = null } = {}) {
+    if (loading) {
+      return `
+        <div class="vote-list-controls">
+          <button class="btn-load-more is-loading" id="votes-load-more" type="button" disabled>
+            <span id="votes-progress">${escapeHTML(progress || 'Analisando votações...')}</span>
+          </button>
+        </div>
+      `;
+    }
+    if (error) {
+      return `
+        <div class="error-banner" style="margin-top:var(--space-md)">
+          ⚠️ Erro ao carregar votações.
+          <br><small>${escapeHTML(error)}</small>
+          <button id="votes-retry" class="btn-load-more" type="button">Tentar novamente</button>
+        </div>
+      `;
+    }
+    if (!exhausted) {
+      return `
+        <div class="vote-list-controls">
+          <button class="btn-load-more" id="votes-load-more" type="button">Carregar mais</button>
+        </div>
+      `;
+    }
+    return `
+      <div class="vote-list-controls">
+        <span class="vote-list-end">Início da 57ª Legislatura alcançado</span>
+      </div>
+    `;
+  }
+
+  function votesPanel(votes) {
+    if (!votes || (!votes.loaded && !votes.loading && !votes.error)) {
+      return '<div class="votes-panel"></div>';
+    }
+
+    const v = votes;
+    let html = '<div class="votes-panel">';
+
+    if (v.loading && v.items.length === 0) {
+      html += voteListSkeleton();
+    } else if (v.loaded && v.items.length === 0 && !v.loading) {
+      html += '<div class="empty-state"><div class="empty-state-icon">🗳️</div><div class="empty-state-text">Nenhum voto nominal encontrado neste período</div></div>';
+    } else {
+      html += voteList(v.items);
+    }
+
+    html += voteListControls(v);
+    html += '</div>';
+    return html;
   }
 
   function camaraFichaURL(id) {
@@ -678,6 +797,12 @@ const Components = (() => {
     propositionDetail,
     propositionDetailSkeleton,
     propositionDetailError,
+    voteBadge,
+    voteCard,
+    voteList,
+    voteListSkeleton,
+    voteListControls,
+    votesPanel,
     animateCounters,
     animateValue,
     renderExpenseChart,
