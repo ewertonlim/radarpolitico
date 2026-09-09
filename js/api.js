@@ -499,6 +499,219 @@ const API = (() => {
     return result;
   }
 
+  // ==========================================
+  // Votações nominais em Plenário
+  // ==========================================
+  const PLENARIO_ID = 180;
+  const VOTES_MIN_DATE = '2023-02-01'; // Início da 57ª Legislatura
+  const VOTOS_TTL_CLOSED_MONTH = 7 * 24 * 60 * 60 * 1000;
+  const VOTOS_TTL_CURRENT_MONTH = 6 * 60 * 60 * 1000;
+  const VOTACAO_DETALHE_TTL = 30 * 24 * 60 * 60 * 1000;
+  const votosCache = new Map();
+
+  function pad2(n) {
+    return String(n).padStart(2, '0');
+  }
+
+  function yearMonthOf(cursorDate) {
+    if (cursorDate instanceof Date) {
+      return [cursorDate.getFullYear(), cursorDate.getMonth() + 1];
+    }
+    const [y, m] = String(cursorDate).split('-').map(Number);
+    return [y, m];
+  }
+
+  /**
+   * First and last day of the month containing cursorDate
+   * @param {Date|string} cursorDate - Date or 'YYYY-MM[-DD]'
+   * @returns {{dataInicio: string, dataFim: string}}
+   */
+  function voteMonthWindow(cursorDate) {
+    const [y, m] = yearMonthOf(cursorDate);
+    const lastDay = new Date(y, m, 0).getDate();
+    return {
+      dataInicio: `${y}-${pad2(m)}-01`,
+      dataFim: `${y}-${pad2(m)}-${pad2(lastDay)}`,
+    };
+  }
+
+  /**
+   * First day of the month before cursorDate ('YYYY-MM-DD')
+   * @param {Date|string} cursorDate
+   * @returns {string}
+   */
+  function previousMonth(cursorDate) {
+    const [y, m] = yearMonthOf(cursorDate);
+    const d = new Date(y, m - 2, 1);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-01`;
+  }
+
+  function votosTTL(monthKey) {
+    const now = new Date();
+    const currentKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}`;
+    return monthKey === currentKey ? VOTOS_TTL_CURRENT_MONTH : VOTOS_TTL_CLOSED_MONTH;
+  }
+
+  function isVotosEntryFresh(entry, monthKey) {
+    return !!entry && Array.isArray(entry.data) && typeof entry.ts === 'number'
+      && Date.now() - entry.ts < votosTTL(monthKey);
+  }
+
+  function readVotosStorage(key, monthKey) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!isVotosEntryFresh(parsed, monthKey)) return null;
+      return parsed;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeVotosStorage(key, entry) {
+    try {
+      localStorage.setItem(key, JSON.stringify(entry));
+    } catch (e) {
+      console.warn('Failed to save votes to LocalStorage:', e);
+    }
+  }
+
+  function readVotacaoDetalheStorage(id) {
+    try {
+      const raw = localStorage.getItem(`rp_votacao_${id}`);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.ts !== 'number' || Date.now() - parsed.ts >= VOTACAO_DETALHE_TTL) return null;
+      return parsed.data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeVotacaoDetalheStorage(id, data) {
+    try {
+      localStorage.setItem(`rp_votacao_${id}`, JSON.stringify({ ts: Date.now(), data }));
+    } catch (e) {
+      console.warn('Failed to save votação to LocalStorage:', e);
+    }
+  }
+
+  /**
+   * List all Plenário votações in a window, following pagination
+   * @param {string} dataInicio - 'YYYY-MM-DD'
+   * @param {string} dataFim - 'YYYY-MM-DD'
+   * @returns {Promise<Array>}
+   */
+  async function getVotacoesPlenario(dataInicio, dataFim) {
+    let url = buildURL('/votacoes', {
+      idOrgao: PLENARIO_ID,
+      dataInicio,
+      dataFim,
+      ordem: 'DESC',
+      ordenarPor: 'dataHoraRegistro',
+      itens: 100,
+      pagina: 1,
+    });
+
+    let all = [];
+    while (url) {
+      const page = await fetchJSON(url);
+      all = all.concat(page.dados || []);
+      const next = (page.links || []).find(l => l.rel === 'next');
+      url = next ? next.href : null;
+    }
+    return all;
+  }
+
+  /**
+   * Get individual votes of a votação (empty dados for symbolic votes)
+   * @param {number|string} idVotacao
+   * @returns {Promise<Array>}
+   */
+  async function getVotosVotacao(idVotacao) {
+    const response = await fetchJSON(buildURL(`/votacoes/${idVotacao}/votos`));
+    return response.dados || [];
+  }
+
+  /**
+   * Get votação detail (cached 30 days, shared across deputies)
+   * @param {number|string} idVotacao
+   * @returns {Promise<Object>}
+   */
+  async function getVotacaoDetalhe(idVotacao) {
+    const stored = readVotacaoDetalheStorage(idVotacao);
+    if (stored) return stored;
+
+    const response = await fetchJSON(buildURL(`/votacoes/${idVotacao}`));
+    writeVotacaoDetalheStorage(idVotacao, response.dados);
+    return response.dados;
+  }
+
+  /**
+   * Aggregate: all nominal plenário votes of a deputy within a window
+   * @param {number} deputadoId
+   * @param {string} dataInicio - 'YYYY-MM-DD' (month determines the cache key)
+   * @param {string} dataFim - 'YYYY-MM-DD'
+   * @param {Function} [onProgress] - called with (done, total) per votação analyzed
+   * @returns {Promise<Array>} sorted DESC by dataHoraRegistro
+   */
+  async function getVotosDeputadoPeriodo(deputadoId, dataInicio, dataFim, onProgress) {
+    const monthKey = String(dataInicio).slice(0, 7);
+    const cacheKey = `rp_votos_${deputadoId}_${monthKey}`;
+
+    const cached = votosCache.get(cacheKey);
+    if (isVotosEntryFresh(cached, monthKey)) return cached.data;
+    votosCache.delete(cacheKey);
+
+    const stored = readVotosStorage(cacheKey, monthKey);
+    if (stored) {
+      votosCache.set(cacheKey, stored);
+      return stored.data;
+    }
+
+    const votacoes = await getVotacoesPlenario(dataInicio, dataFim);
+    const total = votacoes.length;
+    let done = 0;
+
+    const results = await Promise.all(votacoes.map(async (votacao) => {
+      const votos = await getVotosVotacao(votacao.id);
+      done++;
+      if (onProgress) onProgress(done, total);
+      const meu = votos.find(v => Number(v.deputado_?.id) === Number(deputadoId));
+      return meu ? { votacao, voto: meu } : null;
+    }));
+
+    const participadas = results.filter(Boolean);
+
+    const items = await Promise.all(participadas.map(async ({ votacao, voto }) => {
+      let proposicao = null;
+      try {
+        const detalhe = await getVotacaoDetalhe(votacao.id);
+        const p = detalhe?.proposicoesAfetadas?.[0] || detalhe?.objetosPossiveis?.[0] || null;
+        if (p) {
+          proposicao = { sigla: p.siglaTipo, numero: p.numero, ano: p.ano, ementa: p.ementa };
+        }
+      } catch (e) {
+        proposicao = null;
+      }
+      return {
+        idVotacao: votacao.id,
+        dataHoraRegistro: votacao.dataHoraRegistro,
+        descricao: votacao.descricao,
+        voto: voto.tipoVoto,
+        proposicao,
+      };
+    }));
+
+    items.sort((a, b) => String(b.dataHoraRegistro).localeCompare(String(a.dataHoraRegistro)));
+
+    const entry = { ts: Date.now(), data: items };
+    votosCache.set(cacheKey, entry);
+    writeVotosStorage(cacheKey, entry);
+    return items;
+  }
+
   /**
    * Get expense type reference data
    * @returns {Promise<Array>}
@@ -589,6 +802,13 @@ const API = (() => {
     getProposicaoTramitacoes,
     getProposicaoAutores,
     getProposicaoDetalheCompleto,
+    getVotacoesPlenario,
+    getVotosVotacao,
+    getVotacaoDetalhe,
+    getVotosDeputadoPeriodo,
+    voteMonthWindow,
+    previousMonth,
+    VOTES_MIN_DATE,
     getTiposDespesa,
     getPartidos,
     getFotoURL,
