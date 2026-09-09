@@ -40,7 +40,12 @@ describe('API.getVotosDeputadoPeriodo', () => {
   const votacoes = [
     { id: 100, dataHoraRegistro: '2025-05-20T14:00:00', descricao: 'Votação simbólica' },
     { id: 200, dataHoraRegistro: '2025-05-10T10:00:00', descricao: 'Votação nominal antiga' },
-    { id: 300, dataHoraRegistro: '2025-05-22T18:30:00', descricao: 'Votação nominal recente' },
+    {
+      id: '2306513-116',
+      uriEvento: 'https://dadosabertos.camara.leg.br/api/v2/eventos/76594',
+      dataHoraRegistro: '2025-05-22T18:30:00',
+      descricao: 'Votação nominal recente',
+    },
   ];
 
   function mockFetch() {
@@ -59,7 +64,7 @@ describe('API.getVotosDeputadoPeriodo', () => {
           ],
         });
       }
-      if (url.includes('/votacoes/300/votos')) {
+      if (url.includes('/votacoes/2306513-116/votos')) {
         return jsonResponse({
           dados: [{ tipoVoto: 'Sim', deputado_: { id: '7' } }],
         });
@@ -72,7 +77,7 @@ describe('API.getVotosDeputadoPeriodo', () => {
           },
         });
       }
-      if (url.includes('/votacoes/300')) {
+      if (url.includes('/votacoes/2306513-116')) {
         return jsonResponse({
           dados: {
             id: 300,
@@ -96,7 +101,8 @@ describe('API.getVotosDeputadoPeriodo', () => {
 
     expect(items).toHaveLength(2);
     // sorted DESC by dataHoraRegistro
-    expect(items[0].idVotacao).toBe(300);
+    expect(items[0].idVotacao).toBe('2306513-116');
+    expect(items[0].idEvento).toBe(76594);
     expect(items[1].idVotacao).toBe(200);
     expect(items[0].voto).toBe('Sim');
     expect(items[1].voto).toBe('Não');
@@ -107,7 +113,7 @@ describe('API.getVotosDeputadoPeriodo', () => {
     expect(progress).toHaveBeenCalled();
     expect(progress).toHaveBeenLastCalledWith(3, 3);
     // caches the month window
-    expect(localStorage.getItem('rp_votos_7_2025-05')).toBeTruthy();
+    expect(localStorage.getItem('rp_votos_7_2025-05-01_2025-05-31')).toBeTruthy();
   });
 
   it('does not throw when the detail fetch fails (proposicao=null)', async () => {
@@ -152,7 +158,8 @@ describe('Components vote UI', () => {
     loadAPI();
     const Components = loadComponents();
     const html = Components.voteList([{
-      idVotacao: 2306513,
+      idVotacao: '2306513-116',
+      idEvento: 76594,
       dataHoraRegistro: '2025-05-22T18:30:00',
       descricao: 'Desc fallback',
       voto: 'Sim',
@@ -162,8 +169,22 @@ describe('Components vote UI', () => {
     expect(html).toContain('vote-card');
     expect(html).toContain('PL 1234/2024');
     expect(html).toContain('vote-badge vote-yes');
-    expect(html).toContain('https://www.camara.leg.br/votacoes/2306513');
+    expect(html).toContain('https://www.camara.leg.br/evento-legislativo/76594');
     expect(html).toContain('…');
+  });
+
+  it('omits the Câmara link when the votação has no event', () => {
+    loadAPI();
+    const Components = loadComponents();
+    const html = Components.voteList([{
+      idVotacao: 2306513,
+      idEvento: null,
+      dataHoraRegistro: '2025-05-22T18:30:00',
+      voto: 'Sim',
+      proposicao: null,
+    }]);
+
+    expect(html).not.toContain('Ver na Câmara');
   });
 
   it('renders panel states: empty, loading, error and exhausted', () => {
@@ -234,6 +255,39 @@ describe('App votes tab', () => {
     expect(document.querySelector('#tab-votes').innerHTML).toContain('vote-badge vote-yes');
   });
 
+  it('preserves loaded votes and the active tab after retrying expenses', async () => {
+    vi.useFakeTimers();
+    const { API, App } = await setupApp();
+    API.getAllDespesasLegislatura = vi.fn().mockImplementation((_, options) =>
+      Promise.resolve(options?.years
+        ? { expenses: [], failedYears: [] }
+        : { expenses: [], failedYears: [2024] }));
+    API.getVotosDeputadoPeriodo = vi.fn().mockResolvedValue([{
+      idVotacao: 555,
+      dataHoraRegistro: '2025-05-22T18:30:00',
+      descricao: 'Votação X',
+      voto: 'Sim',
+      proposicao: null,
+    }]);
+    API.previousMonth = vi.fn().mockReturnValue('2025-04-01');
+    API.voteMonthWindow = vi.fn().mockReturnValue({ dataInicio: '2025-05-01', dataFim: '2025-05-31' });
+    API.VOTES_MIN_DATE = '2023-02-01';
+
+    await App.init();
+    document.querySelector('.deputy-card').click();
+    await vi.runAllTimersAsync();
+
+    document.querySelector('.modal-tab[data-tab="votes"]').click();
+    await vi.runAllTimersAsync();
+    expect(document.querySelector('#tab-votes').innerHTML).toContain('vote-card');
+
+    document.querySelector('#expenses-retry').click();
+    await vi.runAllTimersAsync();
+
+    expect(document.querySelector('#tab-votes').innerHTML).toContain('vote-card');
+    expect(document.querySelector('.modal-tab[data-tab="votes"]').classList.contains('active')).toBe(true);
+  });
+
   it('discards a stale response for a different deputyId', async () => {
     vi.useFakeTimers();
     const { API, App } = await setupApp();
@@ -265,5 +319,24 @@ describe('App votes tab', () => {
     expect(App.state.modal.deputyId).toBe(2);
     expect(App.state.modal.votes.items).toHaveLength(0);
     expect(document.querySelector('#tab-votes').innerHTML).not.toContain('STALE');
+  });
+});
+
+describe('API vote cache windows', () => {
+  it('does not share cache entries for different windows in the same month', async () => {
+    const API = loadAPI();
+    let listCalls = 0;
+    fetch.mockImplementation(async (url) => {
+      if (url.match(/\/votacoes\?/)) {
+        listCalls++;
+        return jsonResponse({ dados: [], links: [] });
+      }
+      return jsonResponse({ dados: [] });
+    });
+
+    await API.getVotosDeputadoPeriodo(7, '2025-05-01', '2025-05-15');
+    await API.getVotosDeputadoPeriodo(7, '2025-05-16', '2025-05-31');
+
+    expect(listCalls).toBe(2);
   });
 });

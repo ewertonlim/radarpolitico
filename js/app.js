@@ -236,7 +236,8 @@ const App = (() => {
   }
 
   function renderModal() {
-    const { details, propositions, expensesAll, expensesVisible, failedYears } = state.modal;
+    const activeTab = $modal.querySelector('.modal-tab.active')?.dataset.tab;
+    const { details, propositions, expensesAll, expensesVisible, failedYears, votes } = state.modal;
 
     const warningBanner = failedYears.length > 0 ? `
       <div class="error-banner" id="expenses-warning" style="margin:1rem 1rem 0;padding:0.6rem 1rem;font-size:var(--fs-xs)">
@@ -248,7 +249,7 @@ const App = (() => {
     $modal.innerHTML = `
       <button class="modal-close" id="modal-close-btn">✕</button>
       ${warningBanner}
-      ${Components.deputyModal(details, expensesAll, propositions, expensesVisible)}
+      ${Components.deputyModal(details, expensesAll, propositions, expensesVisible, votes)}
     `;
 
     // Render chart
@@ -258,6 +259,7 @@ const App = (() => {
 
     // Bind tab switching
     bindModalTabs();
+    if (activeTab && activeTab !== 'expenses') activateTab(activeTab);
   }
 
   // Re-renders only the expense list + controls (keeps the Chart.js canvas intact)
@@ -439,19 +441,22 @@ const App = (() => {
     document.body.style.overflow = '';
   }
 
+  function activateTab(name) {
+    const tab = $modal.querySelector(`.modal-tab[data-tab="${name}"]`);
+    const panel = $modal.querySelector(`#tab-${name}`);
+    if (!tab || !panel) return;
+
+    $modal.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'));
+    $modal.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    panel.classList.add('active');
+  }
+
   function bindModalTabs() {
     const tabs = $modal.querySelectorAll('.modal-tab');
     tabs.forEach(tab => {
       tab.addEventListener('click', () => {
-        tabs.forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-
-        const panels = $modal.querySelectorAll('.tab-panel');
-        panels.forEach(p => p.classList.remove('active'));
-
-        const targetId = `tab-${tab.dataset.tab}`;
-        const targetPanel = document.getElementById(targetId);
-        if (targetPanel) targetPanel.classList.add('active');
+        activateTab(tab.dataset.tab);
 
         if (tab.dataset.tab === 'votes'
             && !state.modal.votes.loaded

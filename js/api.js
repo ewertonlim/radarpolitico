@@ -597,6 +597,11 @@ const API = (() => {
     }
   }
 
+  function parseEventoId(uri) {
+    const match = String(uri || '').match(/\/(\d+)\/?$/);
+    return match ? Number(match[1]) : null;
+  }
+
   /**
    * List all Plenário votações in a window, following pagination
    * @param {string} dataInicio - 'YYYY-MM-DD'
@@ -658,7 +663,7 @@ const API = (() => {
    */
   async function getVotosDeputadoPeriodo(deputadoId, dataInicio, dataFim, onProgress) {
     const monthKey = String(dataInicio).slice(0, 7);
-    const cacheKey = `rp_votos_${deputadoId}_${monthKey}`;
+    const cacheKey = `rp_votos_${deputadoId}_${dataInicio}_${dataFim}`;
 
     const cached = votosCache.get(cacheKey);
     if (isVotosEntryFresh(cached, monthKey)) return cached.data;
@@ -686,8 +691,9 @@ const API = (() => {
 
     const items = await Promise.all(participadas.map(async ({ votacao, voto }) => {
       let proposicao = null;
+      let detalhe = null;
       try {
-        const detalhe = await getVotacaoDetalhe(votacao.id);
+        detalhe = await getVotacaoDetalhe(votacao.id);
         const p = detalhe?.proposicoesAfetadas?.[0] || detalhe?.objetosPossiveis?.[0] || null;
         if (p) {
           proposicao = { sigla: p.siglaTipo, numero: p.numero, ano: p.ano, ementa: p.ementa };
@@ -697,6 +703,7 @@ const API = (() => {
       }
       return {
         idVotacao: votacao.id,
+        idEvento: votacao.idEvento ?? detalhe?.idEvento ?? parseEventoId(votacao.uriEvento || detalhe?.uriEvento),
         dataHoraRegistro: votacao.dataHoraRegistro,
         descricao: votacao.descricao,
         voto: voto.tipoVoto,

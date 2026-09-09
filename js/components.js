@@ -176,7 +176,7 @@ const Components = (() => {
   // ==========================================
   // Deputy Modal / Profile
   // ==========================================
-  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20) {
+  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20, votes = null) {
     const photoUrl = deputy.urlFoto || API.getFotoURL(deputy.id);
     const totalExpense = expenses.reduce((sum, e) => sum + (e.valorLiquido || 0), 0);
 
@@ -286,7 +286,7 @@ const Components = (() => {
         </div>
 
         <!-- VOTES TAB -->
-        <div class="tab-panel" id="tab-votes">${votesPanel(null)}</div>
+        <div class="tab-panel" id="tab-votes">${votesPanel(votes)}</div>
       </div>
     `;
   }
@@ -397,7 +397,7 @@ const Components = (() => {
         ${ementa ? `<div class="vote-card-ementa">${escapeHTML(ementa)}</div>` : ''}
         <div class="vote-card-meta">
           <span>🗓️ ${dataHora}</span>
-          <a href="https://www.camara.leg.br/votacoes/${escapeHTML(item.idVotacao)}" target="_blank" rel="noopener">Ver na Câmara</a>
+          ${item.idEvento ? `<a href="https://www.camara.leg.br/evento-legislativo/${escapeHTML(item.idEvento)}" target="_blank" rel="noopener">Ver na Câmara</a>` : ''}
         </div>
       </li>
     `;
@@ -452,7 +452,9 @@ const Components = (() => {
   }
 
   function votesPanel(votes) {
-    if (!votes) return '<div class="votes-panel"></div>';
+    if (!votes || (!votes.loaded && !votes.loading && !votes.error)) {
+      return '<div class="votes-panel"></div>';
+    }
 
     const v = votes;
     let html = '<div class="votes-panel">';
