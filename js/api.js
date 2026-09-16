@@ -507,7 +507,9 @@ const API = (() => {
   const VOTOS_TTL_CLOSED_MONTH = 7 * 24 * 60 * 60 * 1000;
   const VOTOS_TTL_CURRENT_MONTH = 6 * 60 * 60 * 1000;
   const VOTACAO_DETALHE_TTL = 30 * 24 * 60 * 60 * 1000;
+  const VOTOS_ENTRY_VERSION = 2;
   const votosCache = new Map();
+  const orientacoesCache = new Map();
 
   function pad2(n) {
     return String(n).padStart(2, '0');
@@ -553,7 +555,8 @@ const API = (() => {
   }
 
   function isVotosEntryFresh(entry, monthKey) {
-    return !!entry && Array.isArray(entry.data) && typeof entry.ts === 'number'
+    return !!entry && entry.v === VOTOS_ENTRY_VERSION && Array.isArray(entry.data)
+      && typeof entry.ts === 'number'
       && Date.now() - entry.ts < votosTTL(monthKey);
   }
 
@@ -594,6 +597,26 @@ const API = (() => {
       localStorage.setItem(`rp_votacao_${id}`, JSON.stringify({ ts: Date.now(), data }));
     } catch (e) {
       console.warn('Failed to save votação to LocalStorage:', e);
+    }
+  }
+
+  function readOrientacoesStorage(id) {
+    try {
+      const raw = localStorage.getItem(`rp_orientacoes_${id}`);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.ts !== 'number' || Date.now() - parsed.ts >= VOTACAO_DETALHE_TTL) return null;
+      return parsed.data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeOrientacoesStorage(id, data) {
+    try {
+      localStorage.setItem(`rp_orientacoes_${id}`, JSON.stringify({ ts: Date.now(), data }));
+    } catch (e) {
+      console.warn('Failed to save orientações to LocalStorage:', e);
     }
   }
 
@@ -654,16 +677,107 @@ const API = (() => {
   }
 
   /**
+   * Get party/bloco orientations of a votação (cached 30 days, shared across deputies)
+   * @param {number|string} idVotacao
+   * @returns {Promise<Array>}
+   */
+  async function getOrientacoesVotacao(idVotacao) {
+    const mem = orientacoesCache.get(idVotacao);
+    if (mem) return mem;
+    const stored = readOrientacoesStorage(idVotacao);
+    if (stored) {
+      orientacoesCache.set(idVotacao, stored);
+      return stored;
+    }
+    const response = await fetchJSON(buildURL(`/votacoes/${idVotacao}/orientacoes`));
+    const dados = response.dados || [];
+    orientacoesCache.set(idVotacao, dados);
+    writeOrientacoesStorage(idVotacao, dados);
+    return dados;
+  }
+
+  /**
+   * Normalize a vote/orientation label to its canonical form
+   * @param {*} str
+   * @returns {string}
+   */
+  function normalizeVoto(str) {
+    const trimmed = String(str ?? '').trim();
+    if (!trimmed) return '';
+    const lower = trimmed.toLowerCase();
+    if (lower === 'sim') return 'Sim';
+    if (lower === 'não' || lower === 'nao') return 'Não';
+    if (lower === 'abstenção' || lower === 'abstencao') return 'Abstenção';
+    if (lower === 'obstrução' || lower === 'obstrucao') return 'Obstrução';
+    if (lower === 'liberado') return 'Liberado';
+    if (lower === 'artigo 17') return 'Artigo 17';
+    return trimmed;
+  }
+
+  const SIGLAS_TRANSVERSAIS = ['GOVERNO', 'OPOSIÇÃO', 'OPOSICAO', 'MINORIA', 'MAIORIA'];
+
+  /**
+   * Find the orientation of a party in a votação, falling back to
+   * federação/bloco lines whose sigla contains the party sigla
+   * @param {Array} orientacoes
+   * @param {string} [siglaPartido]
+   * @returns {string|null} normalized orientation or null
+   */
+  function findOrientacaoPartido(orientacoes, siglaPartido) {
+    if (!siglaPartido || !Array.isArray(orientacoes) || orientacoes.length === 0) return null;
+    const sigla = String(siglaPartido).toUpperCase();
+    const linhas = orientacoes.filter(o =>
+      !SIGLAS_TRANSVERSAIS.includes(String(o?.siglaPartidoBloco || '').toUpperCase()));
+
+    const exata = linhas.find(o => String(o?.siglaPartidoBloco || '').toUpperCase() === sigla);
+    if (exata) return normalizeVoto(exata.orientacaoVoto);
+
+    const bloco = linhas.find((o) => {
+      const nome = String(o?.siglaPartidoBloco || '')
+        .replace(/^(Fdr|Federação|Bloco)\s+/i, '')
+        .toUpperCase();
+      return nome.split(/[-\/\s]+/).includes(sigla);
+    });
+    return bloco ? normalizeVoto(bloco.orientacaoVoto) : null;
+  }
+
+  /**
+   * Find the Governo orientation in a votação
+   * @param {Array} orientacoes
+   * @returns {string|null} normalized orientation or null
+   */
+  function findOrientacaoGoverno(orientacoes) {
+    if (!Array.isArray(orientacoes)) return null;
+    const linha = orientacoes.find(o =>
+      String(o?.siglaPartidoBloco || '').toUpperCase() === 'GOVERNO');
+    return linha ? normalizeVoto(linha.orientacaoVoto) : null;
+  }
+
+  /**
+   * Classify alignment between a deputy's vote and an orientation
+   * @param {*} voto - deputy's tipoVoto
+   * @param {*} orientacao - normalized orientation
+   * @returns {'seguiu'|'divergiu'|null}
+   */
+  function classificarAlinhamento(voto, orientacao) {
+    if (!orientacao || orientacao === 'Liberado') return null;
+    const votoNorm = normalizeVoto(voto);
+    if (!votoNorm || votoNorm === 'Artigo 17') return null;
+    return votoNorm === orientacao ? 'seguiu' : 'divergiu';
+  }
+
+  /**
    * Aggregate: all nominal plenário votes of a deputy within a window
    * @param {number} deputadoId
    * @param {string} dataInicio - 'YYYY-MM-DD' (month determines the cache key)
    * @param {string} dataFim - 'YYYY-MM-DD'
    * @param {Function} [onProgress] - called with (done, total) per votação analyzed
+   * @param {string} [siglaPartido] - deputy's party sigla, used to match party orientation
    * @returns {Promise<Array>} sorted DESC by dataHoraRegistro
    */
-  async function getVotosDeputadoPeriodo(deputadoId, dataInicio, dataFim, onProgress) {
+  async function getVotosDeputadoPeriodo(deputadoId, dataInicio, dataFim, onProgress, siglaPartido) {
     const monthKey = String(dataInicio).slice(0, 7);
-    const cacheKey = `rp_votos_${deputadoId}_${dataInicio}_${dataFim}`;
+    const cacheKey = `rp_votos_${deputadoId}_${siglaPartido || 'x'}_${dataInicio}_${dataFim}`;
 
     const cached = votosCache.get(cacheKey);
     if (isVotosEntryFresh(cached, monthKey)) return cached.data;
@@ -701,6 +815,20 @@ const API = (() => {
       } catch (e) {
         proposicao = null;
       }
+      let orientacaoPartido = null;
+      let orientacaoGoverno = null;
+      let alinhamentoPartido = null;
+      let alinhamentoGoverno = null;
+      let orientacoesErro = false;
+      try {
+        const orientacoes = await getOrientacoesVotacao(votacao.id);
+        orientacaoPartido = findOrientacaoPartido(orientacoes, siglaPartido);
+        orientacaoGoverno = findOrientacaoGoverno(orientacoes);
+        alinhamentoPartido = classificarAlinhamento(voto.tipoVoto, orientacaoPartido);
+        alinhamentoGoverno = classificarAlinhamento(voto.tipoVoto, orientacaoGoverno);
+      } catch (e) {
+        orientacoesErro = true;
+      }
       return {
         idVotacao: votacao.id,
         idEvento: votacao.idEvento ?? detalhe?.idEvento ?? parseEventoId(votacao.uriEvento || detalhe?.uriEvento),
@@ -708,12 +836,18 @@ const API = (() => {
         descricao: votacao.descricao,
         voto: voto.tipoVoto,
         proposicao,
+        siglaPartido: siglaPartido || null,
+        orientacaoPartido,
+        orientacaoGoverno,
+        alinhamentoPartido,
+        alinhamentoGoverno,
+        orientacoesErro,
       };
     }));
 
     items.sort((a, b) => String(b.dataHoraRegistro).localeCompare(String(a.dataHoraRegistro)));
 
-    const entry = { ts: Date.now(), data: items };
+    const entry = { v: VOTOS_ENTRY_VERSION, ts: Date.now(), data: items };
     votosCache.set(cacheKey, entry);
     writeVotosStorage(cacheKey, entry);
     return items;
@@ -812,6 +946,11 @@ const API = (() => {
     getVotacoesPlenario,
     getVotosVotacao,
     getVotacaoDetalhe,
+    getOrientacoesVotacao,
+    normalizeVoto,
+    findOrientacaoPartido,
+    findOrientacaoGoverno,
+    classificarAlinhamento,
     getVotosDeputadoPeriodo,
     voteMonthWindow,
     previousMonth,

@@ -39,6 +39,7 @@ const App = (() => {
         exhausted: false,
         loaded: false,
         progress: null,
+        alignmentFilter: 'todas',
       },
     },
   };
@@ -219,6 +220,7 @@ const App = (() => {
           exhausted: false,
           loaded: false,
           progress: null,
+          alignmentFilter: 'todas',
         },
       };
 
@@ -331,6 +333,7 @@ const App = (() => {
           const $progress = document.getElementById('votes-progress');
           if ($progress) $progress.textContent = state.modal.votes.progress;
         },
+        state.modal.details?.ultimoStatus?.siglaPartido || state.modal.details?.siglaPartido || null,
       );
       if (!state.modalOpen || state.modal.deputyId !== deputyId) return;
 
@@ -502,6 +505,12 @@ const App = (() => {
       if (votesLoadMoreBtn && !votesLoadMoreBtn.disabled) { loadMoreVotes(); return; }
       const votesRetryBtn = e.target.closest('#votes-retry');
       if (votesRetryBtn && !votesRetryBtn.disabled) { loadVotes(); return; }
+      const alignmentChip = e.target.closest('.alignment-chip');
+      if (alignmentChip) {
+        state.modal.votes.alignmentFilter = alignmentChip.dataset.filter;
+        renderVotesPanel();
+        return;
+      }
 
       // Proposition details
       const propRetryBtn = e.target.closest('.prop-retry');
