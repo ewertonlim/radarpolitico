@@ -19,9 +19,11 @@ O **Radar Político** é uma aplicação web de transparência pública que perm
 - **Listagem de deputados** com paginação (20 por página), foto oficial, partido e UF.
 - **Busca e filtros** por nome, partido e UF, com contador de resultados.
 - **Cards de estatísticas** no topo (total de deputados carregados e contador ilustrativo de proposições), com animação de contagem.
-- **Modal do deputado** com perfil (situação, gabinete, e-mail, escolaridade) e duas abas:
+- **Modal do deputado** com perfil (situação, gabinete, e-mail, escolaridade) e quatro abas:
   - **Despesas:** histórico completo da legislatura (todos os anos desde 2023), ordenado do mais recente para o mais antigo, com "Carregar mais"/"Ver todas", totalizadores e gráfico Chart.js por tipo de despesa. Anos que falharem ao carregar são sinalizados com opção de tentar novamente.
   - **Proposições:** proposições de autoria do deputado, com detalhe expansível (ementa detalhada, autores, tramitações e link para o inteiro teor).
+  - **Votações:** votos nominais do deputado em plenário, carregados sob demanda mês a mês, com destaque para o voto e link para o evento na Câmara.
+  - **Atuação:** comissões e órgãos do deputado (deduplicadas, separadas em "Em exercício"/"Encerradas" com cargo de maior peso e resumo de atuais/direção/encerradas), frentes parlamentares da 57ª Legislatura (com busca local e link para a página da frente) e linha do tempo do histórico de mandato (posse, trocas de partido, licenças, afastamentos e retornos). Cada bloco carrega sob demanda e tem retry isolado em caso de falha.
 - **Ranking Top 10 por despesas:** o componente `Components.rankingTable` está implementado em `js/components.js`, mas ainda não é exibido na interface atual (candidato a melhoria futura).
 - Estados de carregamento (skeleton/shimmer), estados vazios e mensagens de erro em todas as telas.
 
@@ -75,6 +77,9 @@ Todos os dados vêm da API v2 da Câmara (`BASE_URL` em `js/api.js`), sempre fil
 | `GET /proposicoes/{id}` | Detalhe da proposição (ementa detalhada, inteiro teor). |
 | `GET /proposicoes/{id}/tramitacoes` | Tramitações da proposição (ordenadas da mais recente). |
 | `GET /proposicoes/{id}/autores` | Autores da proposição. |
+| `GET /deputados/{id}/orgaos?dataInicio=2023-02-01&itens=100&ordem=DESC&ordenarPor=dataInicio` | Comissões e órgãos do deputado na legislatura (aba "Atuação"; paginado via `links[rel=next]`). |
+| `GET /deputados/{id}/frentes` | Frentes parlamentares do deputado (todas as legislaturas; filtradas para a 57ª no cliente). |
+| `GET /deputados/{id}/historico` | Histórico de partido/situação do mandato (linha do tempo da aba "Atuação"). |
 | `GET /referencias/deputados/tipoDespesa`, `GET /partidos` | Dados de referência (disponíveis em `API`, uso opcional). |
 
 Fotos: `https://www.camara.leg.br/internet/deputado/bandep/{id}.jpg` (`API.getFotoURL(id)`).
@@ -87,6 +92,7 @@ Fotos: `https://www.camara.leg.br/internet/deputado/bandep/{id}.jpg` (`API.getFo
 | Lista completa de deputados | `localStorage` (`radar_politico_deputados_v2`) | 24 h |
 | Despesas por deputado e ano | Memória + `localStorage` (`rp_despesas_{id}_{ano}`) | 24 h para anos fechados (`DESPESAS_TTL_CLOSED_YEAR`); 6 h para o ano corrente (`DESPESAS_TTL_CURRENT_YEAR`) |
 | Detalhe completo da proposição (detalhe + tramitações + autores) | `localStorage` (`rp:prop:{id}`) | 24 h (`PROP_TTL`) |
+| Comissões/órgãos, frentes e histórico do deputado | `localStorage` (`rp_orgaos_{id}`, `rp_frentes_{id}`, `rp_historico_{id}`) | 24 h (`ACTIVITY_TTL`) |
 
 ### Resiliência
 

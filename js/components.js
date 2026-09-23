@@ -176,7 +176,7 @@ const Components = (() => {
   // ==========================================
   // Deputy Modal / Profile
   // ==========================================
-  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20, votes = null) {
+  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20, votes = null, activity = null) {
     const photoUrl = deputy.urlFoto || API.getFotoURL(deputy.id);
     const totalExpense = expenses.reduce((sum, e) => sum + (e.valorLiquido || 0), 0);
 
@@ -220,6 +220,7 @@ const Components = (() => {
         <button class="modal-tab active" data-tab="expenses">💰 Gastos</button>
         <button class="modal-tab" data-tab="propositions">📋 Proposições</button>
         <button class="modal-tab" data-tab="votes">🗳️ Votações</button>
+        <button class="modal-tab" data-tab="activity">🏛️ Atuação</button>
       </div>
 
       <div class="modal-content">
@@ -287,6 +288,9 @@ const Components = (() => {
 
         <!-- VOTES TAB -->
         <div class="tab-panel" id="tab-votes">${votesPanel(votes)}</div>
+
+        <!-- ACTIVITY TAB -->
+        <div class="tab-panel" id="tab-activity">${activityPanel(activity)}</div>
       </div>
     `;
   }
@@ -470,6 +474,200 @@ const Components = (() => {
     html += voteListControls(v);
     html += '</div>';
     return html;
+  }
+
+  // ==========================================
+  // Activity (Atuação) tab — comissões, frentes, histórico
+  // ==========================================
+  function activitySkeleton() {
+    const block = `
+      <div class="skeleton-card" style="margin-bottom:var(--space-md)">
+        <div class="skeleton skeleton-line w-60" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line w-30"></div>
+      </div>
+    `;
+    return `<div class="activity-skeleton">${block.repeat(2)}</div>`;
+  }
+
+  function activityBlockError(bloco, msg) {
+    return `
+      <div class="error-banner" style="margin-top:var(--space-sm)">
+        ⚠️ Erro ao carregar dados.
+        <br><small>${escapeHTML(msg)}</small>
+        <button class="btn-load-more" data-activity-retry="${escapeHTML(bloco)}" type="button">Tentar novamente</button>
+      </div>
+    `;
+  }
+
+  function orgaoItem(o) {
+    const badgeVariant = o.peso >= 4 ? 'orgao-badge--presidente'
+      : o.peso === 3 ? 'orgao-badge--vice' : '';
+    const periodo = `${API.formatDate(o.inicio)} – ${o.fim ? API.formatDate(o.fim) : 'atual'}`;
+    return `
+      <li class="orgao-item">
+        <div class="orgao-item-info">
+          <div class="orgao-item-nome" title="${escapeHTML(o.nome)}">${escapeHTML(o.sigla)} — ${escapeHTML(o.nome)}</div>
+          <div class="orgao-item-periodo">${periodo}</div>
+        </div>
+        <span class="orgao-badge ${badgeVariant}">${escapeHTML(o.cargo || '—')}</span>
+      </li>
+    `;
+  }
+
+  function orgaosBlock(o = {}) {
+    if (o.loading) return activitySkeleton();
+    if (o.error) return activityBlockError('orgaos', o.error);
+
+    const items = o.data || [];
+    if (items.length === 0) {
+      return '<div class="empty-state"><div class="empty-state-icon">🏛️</div><div class="empty-state-text">Nenhuma comissão registrada na 57ª Legislatura</div></div>';
+    }
+
+    const atuais = items.filter(i => i.emExercicio);
+    const encerradas = items.filter(i => !i.emExercicio);
+    const direcao = items.filter(i => i.peso >= 3).length;
+
+    const summary = `
+      <div class="activity-summary">
+        ${atuais.length} atuais · ${direcao} cargos de direção · ${encerradas.length} encerradas
+      </div>
+    `;
+
+    const VISIBLE = 8;
+    const showAll = !!o.showAll;
+
+    const section = (title, list, offset) => {
+      if (list.length === 0) return '';
+      const shown = showAll ? list : list.slice(0, VISIBLE);
+      const remaining = list.length - shown.length;
+      return `
+        <h4 class="activity-subtitle">${title}</h4>
+        <ul class="orgao-list">${shown.map(orgaoItem).join('')}</ul>
+        ${remaining > 0 ? `
+          <div class="activity-controls">
+            <button class="btn-load-more" data-activity-show-all="orgaos" type="button">Ver todas (${list.length})</button>
+          </div>` : ''}
+      `;
+    };
+
+    const lessBtn = showAll ? `
+      <div class="activity-controls">
+        <button class="btn-load-more" data-activity-show-all="orgaos" type="button">Ver menos</button>
+      </div>` : '';
+
+    return `
+      ${summary}
+      ${section('Em exercício', atuais)}
+      ${section('Encerradas', encerradas)}
+      ${lessBtn}
+    `;
+  }
+
+  function frenteItem(f) {
+    return `
+      <li class="frente-item">
+        <a href="https://www.camara.leg.br/frentes/${escapeHTML(f.id)}" target="_blank" rel="noopener noreferrer">
+          ${escapeHTML(f.titulo)}
+        </a>
+      </li>
+    `;
+  }
+
+  function frentesListInner(f = {}) {
+    const items = f.data || [];
+    const query = (f.query || '').toLowerCase();
+    const filtered = query
+      ? items.filter(item => String(item.titulo || '').toLowerCase().includes(query))
+      : items;
+
+    const VISIBLE = 10;
+    const showAll = !!f.showAll;
+    const shown = showAll ? filtered : filtered.slice(0, VISIBLE);
+    const remaining = filtered.length - shown.length;
+
+    return `
+      ${filtered.length === 0
+        ? '<div class="empty-state"><div class="empty-state-text">Nenhuma frente encontrada para essa busca.</div></div>'
+        : `<ul class="frente-list">${shown.map(frenteItem).join('')}</ul>`}
+      ${remaining > 0 ? `
+        <div class="activity-controls">
+          <button class="btn-load-more" data-activity-show-all="frentes" type="button">Ver todas (${filtered.length})</button>
+        </div>` : ''}
+      ${showAll && filtered.length > VISIBLE ? `
+        <div class="activity-controls">
+          <button class="btn-load-more" data-activity-show-all="frentes" type="button">Ver menos</button>
+        </div>` : ''}
+    `;
+  }
+
+  function frentesBlock(f = {}) {
+    if (f.loading) return activitySkeleton();
+    if (f.error) return activityBlockError('frentes', f.error);
+
+    const items = f.data || [];
+    if (items.length === 0) {
+      return '<div class="empty-state"><div class="empty-state-icon">👥</div><div class="empty-state-text">Nenhuma frente parlamentar na 57ª Legislatura</div></div>';
+    }
+
+    return `
+      <input id="frentes-search" class="frentes-search" type="search"
+             placeholder="Buscar frente..." value="${escapeHTML(f.query || '')}" autocomplete="off" />
+      <div id="frentes-list">${frentesListInner(f)}</div>
+    `;
+  }
+
+  function historicoItem(e) {
+    const isTroca = e.tipo === 'troca_partido';
+    return `
+      <li class="timeline-event ${isTroca ? 'timeline-event--troca' : ''}">
+        <div class="timeline-date">${API.formatDate(e.data)}</div>
+        <div class="timeline-desc">${escapeHTML(e.descricao)}</div>
+      </li>
+    `;
+  }
+
+  function historicoBlock(h = {}) {
+    if (h.loading) return activitySkeleton();
+    if (h.error) return activityBlockError('historico', h.error);
+
+    const items = h.data || [];
+    if (items.length === 0) {
+      return '<div class="empty-state"><div class="empty-state-icon">📜</div><div class="empty-state-text">Nenhum evento de mandato registrado</div></div>';
+    }
+
+    const trocas = API.countPartyChanges(items);
+    const badge = trocas > 0
+      ? `<span class="party-change-badge">🔁 Trocou de partido ${trocas} vez(es)</span>`
+      : '<span class="party-change-badge party-change-badge--none">Sem troca de partido na 57ª Legislatura</span>';
+
+    return `
+      <div class="activity-summary">${badge}</div>
+      <ul class="timeline">${items.map(historicoItem).join('')}</ul>
+    `;
+  }
+
+  function activityPanel(activity) {
+    if (!activity || (!activity.loaded && !activity.loading)) {
+      return '<div class="activity-panel"></div>';
+    }
+
+    return `
+      <div class="activity-panel">
+        <div class="activity-block" id="activity-orgaos">
+          <h3 class="activity-block-title">🏛️ Comissões e órgãos</h3>
+          ${orgaosBlock(activity.orgaos)}
+        </div>
+        <div class="activity-block" id="activity-frentes">
+          <h3 class="activity-block-title">👥 Frentes parlamentares (${(activity.frentes.data || []).length})</h3>
+          ${frentesBlock(activity.frentes)}
+        </div>
+        <div class="activity-block" id="activity-historico">
+          <h3 class="activity-block-title">📜 Histórico no mandato</h3>
+          ${historicoBlock(activity.historico)}
+        </div>
+      </div>
+    `;
   }
 
   function camaraFichaURL(id) {
@@ -803,6 +1001,16 @@ const Components = (() => {
     voteListSkeleton,
     voteListControls,
     votesPanel,
+    activityPanel,
+    activitySkeleton,
+    activityBlockError,
+    orgaosBlock,
+    orgaoItem,
+    frentesBlock,
+    frentesListInner,
+    frenteItem,
+    historicoBlock,
+    historicoItem,
     animateCounters,
     animateValue,
     renderExpenseChart,
