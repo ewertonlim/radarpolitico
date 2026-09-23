@@ -40,8 +40,19 @@ const App = (() => {
         loaded: false,
         progress: null,
       },
+      activity: emptyActivityState(),
     },
   };
+
+  function emptyActivityState() {
+    return {
+      loaded: false,
+      loading: false,
+      orgaos: { data: null, error: null, loading: false, showAll: false },
+      frentes: { data: null, error: null, loading: false, query: '', showAll: false },
+      historico: { data: null, error: null, loading: false },
+    };
+  }
 
   // ==========================================
   // DOM References
@@ -220,6 +231,7 @@ const App = (() => {
           loaded: false,
           progress: null,
         },
+        activity: emptyActivityState(),
       };
 
       renderModal();
@@ -237,7 +249,7 @@ const App = (() => {
 
   function renderModal() {
     const activeTab = $modal.querySelector('.modal-tab.active')?.dataset.tab;
-    const { details, propositions, expensesAll, expensesVisible, failedYears, votes } = state.modal;
+    const { details, propositions, expensesAll, expensesVisible, failedYears, votes, activity } = state.modal;
 
     const warningBanner = failedYears.length > 0 ? `
       <div class="error-banner" id="expenses-warning" style="margin:1rem 1rem 0;padding:0.6rem 1rem;font-size:var(--fs-xs)">
@@ -249,7 +261,7 @@ const App = (() => {
     $modal.innerHTML = `
       <button class="modal-close" id="modal-close-btn">✕</button>
       ${warningBanner}
-      ${Components.deputyModal(details, expensesAll, propositions, expensesVisible, votes)}
+      ${Components.deputyModal(details, expensesAll, propositions, expensesVisible, votes, activity)}
     `;
 
     // Render chart
@@ -366,6 +378,98 @@ const App = (() => {
 
   const loadMoreVotes = loadVotes;
 
+  // ==========================================
+  // Activity tab (lazy loading — comissões, frentes, histórico)
+  // ==========================================
+  function renderActivityPanel() {
+    const $panel = document.getElementById('tab-activity');
+    if (!$panel) return;
+    $panel.innerHTML = Components.activityPanel(state.modal.activity);
+  }
+
+  async function loadActivity() {
+    const a = state.modal.activity;
+    const deputyId = state.modal.deputyId;
+    if (!deputyId || a.loading) return;
+
+    a.loading = true;
+    a.orgaos.loading = true;
+    a.frentes.loading = true;
+    a.historico.loading = true;
+    renderActivityPanel();
+
+    const [orgaos, frentes, historico] = await Promise.allSettled([
+      API.getDeputadoOrgaos(deputyId),
+      API.getDeputadoFrentes(deputyId),
+      API.getDeputadoHistorico(deputyId),
+    ]);
+
+    if (!state.modalOpen || state.modal.deputyId !== deputyId) return;
+
+    a.orgaos.loading = false;
+    a.frentes.loading = false;
+    a.historico.loading = false;
+
+    if (orgaos.status === 'fulfilled') {
+      a.orgaos.data = API.consolidateOrgaos(orgaos.value);
+      a.orgaos.error = null;
+    } else {
+      a.orgaos.error = orgaos.reason?.message || 'Erro desconhecido';
+    }
+
+    if (frentes.status === 'fulfilled') {
+      a.frentes.data = API.filterFrentes57(frentes.value);
+      a.frentes.error = null;
+    } else {
+      a.frentes.error = frentes.reason?.message || 'Erro desconhecido';
+    }
+
+    if (historico.status === 'fulfilled') {
+      a.historico.data = API.buildHistoricoTimeline(historico.value);
+      a.historico.error = null;
+    } else {
+      a.historico.error = historico.reason?.message || 'Erro desconhecido';
+    }
+
+    a.loaded = true;
+    a.loading = false;
+    renderActivityPanel();
+  }
+
+  async function retryActivityBlock(bloco) {
+    const a = state.modal.activity;
+    const block = a && a[bloco];
+    const deputyId = state.modal.deputyId;
+    if (!block || block.loading || !deputyId) return;
+
+    const fetchers = {
+      orgaos: async () => API.consolidateOrgaos(await API.getDeputadoOrgaos(deputyId)),
+      frentes: async () => API.filterFrentes57(await API.getDeputadoFrentes(deputyId)),
+      historico: async () => API.buildHistoricoTimeline(await API.getDeputadoHistorico(deputyId)),
+    };
+    const fetcher = fetchers[bloco];
+    if (!fetcher) return;
+
+    block.loading = true;
+    block.error = null;
+    renderActivityPanel();
+
+    try {
+      const data = await fetcher();
+      if (!state.modalOpen || state.modal.deputyId !== deputyId) return;
+      block.data = data;
+      block.error = null;
+    } catch (err) {
+      if (!state.modalOpen || state.modal.deputyId !== deputyId) return;
+      block.error = err.message;
+    } finally {
+      if (state.modalOpen && state.modal.deputyId === deputyId) {
+        block.loading = false;
+        renderActivityPanel();
+      }
+    }
+  }
+
   async function retryFailedYears() {
     const m = state.modal;
     if (!m.failedYears.length || !m.deputyId) return;
@@ -463,6 +567,12 @@ const App = (() => {
             && !state.modal.votes.loading) {
           loadVotes();
         }
+
+        if (tab.dataset.tab === 'activity'
+            && !state.modal.activity.loaded
+            && !state.modal.activity.loading) {
+          loadActivity();
+        }
       });
     });
   }
@@ -503,6 +613,22 @@ const App = (() => {
       const votesRetryBtn = e.target.closest('#votes-retry');
       if (votesRetryBtn && !votesRetryBtn.disabled) { loadVotes(); return; }
 
+      // Activity panel controls
+      const activityRetryBtn = e.target.closest('[data-activity-retry]');
+      if (activityRetryBtn && !activityRetryBtn.disabled) {
+        retryActivityBlock(activityRetryBtn.dataset.activityRetry);
+        return;
+      }
+      const activityShowAllBtn = e.target.closest('[data-activity-show-all]');
+      if (activityShowAllBtn && !activityShowAllBtn.disabled) {
+        const bloco = activityShowAllBtn.dataset.activityShowAll;
+        if (state.modal.activity[bloco]) {
+          state.modal.activity[bloco].showAll = !state.modal.activity[bloco].showAll;
+          renderActivityPanel();
+        }
+        return;
+      }
+
       // Proposition details
       const propRetryBtn = e.target.closest('.prop-retry');
       if (propRetryBtn) {
@@ -531,6 +657,17 @@ const App = (() => {
       }
 
 
+    });
+
+    // Frentes search (delegated — re-renders only the list, keeping input focus)
+    document.addEventListener('input', (e) => {
+      if (e.target.id !== 'frentes-search') return;
+      const frentes = state.modal.activity && state.modal.activity.frentes;
+      if (!frentes) return;
+      frentes.query = e.target.value;
+      frentes.showAll = false;
+      const $list = document.getElementById('frentes-list');
+      if ($list) $list.innerHTML = Components.frentesListInner(frentes);
     });
 
     // Keyboard: Enter on cards, Escape to close modal
@@ -620,5 +757,5 @@ const App = (() => {
     bindHeaderSearch();
   });
 
-  return { init, state };
+  return { init, state, loadActivity, retryActivityBlock, renderActivityPanel };
 })();
