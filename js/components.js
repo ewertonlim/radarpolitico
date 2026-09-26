@@ -1148,7 +1148,7 @@ const Components = (() => {
     ids.forEach(id => (summaries[id]?.gastos?.data?.porCategoria || []).forEach(c => {
       const label = shortenExpenseType(c.tipo);
       if (!byCategory.has(label)) byCategory.set(label, new Map());
-      byCategory.get(label).set(id, c.valor);
+      byCategory.get(label).set(id, (byCategory.get(label).get(id) || 0) + c.valor);
     }));
     const labels = Array.from(byCategory.entries()).map(([label, vals]) => ({ label, total: Array.from(vals.values()).reduce((a, b) => a + b, 0) })).sort((a, b) => b.total - a.total).slice(0, 5).map(v => v.label);
     const colors = ['#6366f1', '#10b981', '#f59e0b'];

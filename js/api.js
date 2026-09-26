@@ -1366,6 +1366,7 @@ const API = (() => {
     ids.forEach(id => { porDeputado[id] = []; });
 
     let nominais = 0;
+    let orientacoesFalhas = 0;
     await Promise.all(votacoes.map(async (votacao) => {
       const votos = await getVotosVotacao(votacao.id);
       done++;
@@ -1386,14 +1387,15 @@ const API = (() => {
         orientacoes = await getOrientacoesVotacao(votacao.id);
       } catch (e) {
         orientacoes = [];
+        orientacoesFalhas++;
       }
       encontrados.forEach(({ id, reg }) => {
         porDeputado[id].push({ idVotacao: votacao.id, voto: reg.tipoVoto, orientacoes });
       });
     }));
 
-    const result = { totalVotacoes: nominais, porDeputado };
-    compareVotesCache.set(cacheKey, result);
+    const result = { totalVotacoes: nominais, porDeputado, parcial: orientacoesFalhas > 0 };
+    if (!result.parcial) compareVotesCache.set(cacheKey, result);
     return result;
   }
 
@@ -1462,6 +1464,7 @@ const API = (() => {
 
     return {
       id,
+      computedAt: Date.now(),
       perfil: perfil.status === 'fulfilled'
         ? blockOk(perfilData, false)
         : blockError(perfil.reason),

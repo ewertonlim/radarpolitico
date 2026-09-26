@@ -806,13 +806,26 @@ const App = (() => {
     if (comparePreviousFocus && typeof comparePreviousFocus.focus === 'function') comparePreviousFocus.focus();
   }
 
+  const COMPARE_SUMMARY_TTL = 10 * 60 * 1000;
+
   async function loadCompareData() {
     const ids = [...state.compare.selected];
-    const existing = ids.filter(id => !state.compare.summaries[id]);
-    const results = await Promise.allSettled(existing.map(id => API.computeDeputySummary(id, { votos: null })));
+    const toCompute = ids.filter(id => {
+      const s = state.compare.summaries[id];
+      if (!s || !s.computedAt || Date.now() - s.computedAt >= COMPARE_SUMMARY_TTL) return true;
+      return ['perfil', 'gastos', 'producao', 'atuacao'].some(section => {
+        const status = s[section]?.status;
+        return status === 'error' || status === 'skipped' || status === 'loading';
+      });
+    });
+    const results = await Promise.allSettled(toCompute.map(id => API.computeDeputySummary(id, { votos: null })));
     if (!state.compare.open || ids.join(',') !== state.compare.selected.join(',')) return;
-    results.forEach((result, i) => { if (result.status === 'fulfilled') state.compare.summaries[existing[i]] = result.value; });
+    results.forEach((result, i) => { if (result.status === 'fulfilled') state.compare.summaries[toCompute[i]] = result.value; });
     renderCompareModal();
+    await loadCompareVotes(ids);
+  }
+
+  async function loadCompareVotes(ids) {
     state.compare.votesStatus = 'loading';
     renderCompareModal();
     try {
@@ -837,33 +850,38 @@ const App = (() => {
     } catch (err) {
       state.compare.votesStatus = 'error';
       state.compare.votesError = err.message;
+      ids.forEach(id => {
+        const summary = state.compare.summaries[id] || { id };
+        summary.votacoes = { status: 'error', data: null, error: err.message };
+        state.compare.summaries[id] = summary;
+      });
     }
     if (state.compare.open && ids.join(',') === state.compare.selected.join(',')) renderCompareModal();
   }
 
   async function retryCompareSection(id, section) {
     const summary = state.compare.summaries[id] || { id };
+    if (section === 'votacoes' && state.compare.votesStatus !== 'ok') {
+      summary[section] = { status: 'loading', data: null, error: null };
+      state.compare.summaries[id] = summary;
+      renderCompareModal();
+      await loadCompareVotes([...state.compare.selected]);
+      return;
+    }
     summary[section] = { status: 'loading', data: null, error: null };
     state.compare.summaries[id] = summary;
     renderCompareModal();
-    let votes = state.compare.votes;
-    if (section === 'votacoes' && state.compare.votesStatus === 'error') {
-      try {
-        state.compare.votesStatus = 'loading';
-        votes = await API.getVotosComparados(state.compare.selected, API.compareVotesWindow());
-        state.compare.votes = votes;
-        state.compare.votesStatus = 'ok';
-      } catch (err) {
-        state.compare.votesStatus = 'error';
-        summary[section] = { status: 'error', data: null, error: err.message };
-        renderCompareModal();
-        return;
-      }
-    }
+    const votes = state.compare.votes;
     summary[section] = await API.computeCompareSection(id, section, {
       votos: votes && { totalVotacoes: votes.totalVotacoes, items: votes.porDeputado[id] || [] },
       partido: summary.perfil?.data?.partido,
     });
+    if (section === 'perfil' && summary[section].status === 'ok' && votes) {
+      summary.votacoes = await API.computeCompareSection(id, 'votacoes', {
+        votos: { totalVotacoes: votes.totalVotacoes, items: votes.porDeputado[id] || [] },
+        partido: summary.perfil?.data?.partido,
+      });
+    }
     state.compare.summaries[id] = summary;
     renderCompareModal();
   }

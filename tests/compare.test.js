@@ -54,6 +54,27 @@ describe('API comparador', () => {
     expect(API.summarizeAtuacao([{ peso: 3 }, { peso: 1 }], [{ id: 1 }], [{ tipo: 'troca_partido' }])).toEqual({ comissoes: 2, comCargo: 1, frentes: 1, trocasPartido: 1 });
   });
 
+  it('marca resultado parcial e não cacheia quando orientações falham', async () => {
+    vi.useFakeTimers();
+    const API = loadAPI();
+    fetch.mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes('/orientacoes')) return Promise.reject(new Error('boom'));
+      if (u.includes('/votos')) return Promise.resolve({ ok: true, json: async () => ({ dados: [{ deputado_: { id: 1 }, tipoVoto: 'Sim' }] }) });
+      return Promise.resolve({ ok: true, json: async () => ({ dados: [{ id: 9, dataHoraRegistro: '2025-06-10T10:00:00' }], links: [] }) });
+    });
+    const window = { dataInicio: '2025-06-01', dataFim: '2025-06-15' };
+    const p1 = API.getVotosComparados([1], window);
+    await vi.runAllTimersAsync();
+    const r1 = await p1;
+    expect(r1.parcial).toBe(true);
+    const p2 = API.getVotosComparados([1], window);
+    await vi.runAllTimersAsync();
+    const r2 = await p2;
+    expect(r2.parcial).toBe(true);
+    expect(fetch.mock.calls.filter(c => String(c[0]).includes('/orientacoes')).length).toBe(6);
+  });
+
   it('resume votações e classifica empates', () => {
     const API = loadAPI();
     const result = API.summarizeVotacoes([1, 2, 3, 4], [
