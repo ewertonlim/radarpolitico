@@ -2216,7 +2216,9 @@ img {
   padding: 0.35rem 0.6rem;
   transition: all var(--transition-fast);
 }
-.compare-toggle--card { position: absolute; top: var(--space-md); right: var(--space-md); z-index: 2; }
+.compare-toggle--card { flex-shrink: 0; }
+.deputy-card-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); }
+.deputy-card-footer .deputy-email { min-width: 0; }
 .compare-toggle--modal { margin-bottom: var(--space-sm); }
 .compare-toggle:hover, .compare-toggle.is-checked { border-color: var(--accent-indigo); color: var(--accent-indigo-light); background: var(--accent-indigo-glow); }
 .compare-toggle:disabled { opacity: .5; cursor: not-allowed; }

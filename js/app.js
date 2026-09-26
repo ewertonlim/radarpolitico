@@ -848,35 +848,66 @@ const App = (() => {
     renderCompareModal();
     let votes = state.compare.votes;
     if (section === 'votacoes' && state.compare.votesStatus === 'error') {
-      try { state.compare.votesStatus = 'loading'; votes = await API.getVotosComparados(state.compare.selected, API.compareVotesWindow()); state.compare.votes = votes; state.compare.votesStatus = 'ok'; } catch (err) { state.compare.votesStatus = 'error'; summary[section] = { status: 'error', data: null, error: err.message }; renderCompareModal(); return; }
+      try {
+        state.compare.votesStatus = 'loading';
+        votes = await API.getVotosComparados(state.compare.selected, API.compareVotesWindow());
+        state.compare.votes = votes;
+        state.compare.votesStatus = 'ok';
+      } catch (err) {
+        state.compare.votesStatus = 'error';
+        summary[section] = { status: 'error', data: null, error: err.message };
+        renderCompareModal();
+        return;
+      }
     }
-    summary[section] = await API.computeCompareSection(id, section, { votos: votes && { totalVotacoes: votes.totalVotacoes, items: votes.porDeputado[id] || [] }, partido: summary.perfil?.data?.partido });
+    summary[section] = await API.computeCompareSection(id, section, {
+      votos: votes && { totalVotacoes: votes.totalVotacoes, items: votes.porDeputado[id] || [] },
+      partido: summary.perfil?.data?.partido,
+    });
     state.compare.summaries[id] = summary;
     renderCompareModal();
   }
 
   function shareCompareLink() {
     const link = `${location.origin}${location.pathname}?${serializeCompareParam(state.compare.selected)}`;
-    copyCompareText(link, document.getElementById('compare-share'));
+    copyCompareText(link, document.getElementById('compare-share'), 'Link copiado!');
   }
 
   function copyCompareSummary() {
-    copyCompareText(Components.compareMarkdown(state.compare.summaries, state.compare.selected, API.compareVotesWindow()), document.getElementById('compare-copy'));
+    copyCompareText(
+      Components.compareMarkdown(state.compare.summaries, state.compare.selected, API.compareVotesWindow()),
+      document.getElementById('compare-copy'),
+      'Resumo copiado!'
+    );
   }
 
-  async function copyCompareText(text, button) {
-    try { if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text); else throw new Error('clipboard'); }
-    catch (e) { window.prompt('Copie o conteúdo da comparação:', text); return; }
-    if (button) { const original = button.textContent; button.textContent = 'Link copiado!'; setTimeout(() => { button.textContent = original; }, 2000); }
+  async function copyCompareText(text, button, feedback) {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard');
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      window.prompt('Copie o conteúdo da comparação:', text);
+      return;
+    }
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = feedback;
+    setTimeout(() => { button.textContent = original; }, 2000);
   }
 
   function trapCompareFocus(e) {
     if (e.key !== 'Tab' || !$compareOverlay?.classList.contains('active')) return;
     const focusable = [...$compareContent.querySelectorAll('button:not([disabled]), a[href], input, [tabindex]:not([tabindex="-1"])')];
     if (!focusable.length) return;
-    const first = focusable[0]; const last = focusable[focusable.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   }
 
   // ==========================================
@@ -892,14 +923,24 @@ const App = (() => {
         return;
       }
       const removeButton = e.target.closest('[data-compare-remove]');
-      if (removeButton) { removeFromCompare(removeButton.dataset.compareRemove); return; }
+      if (removeButton) {
+        removeFromCompare(removeButton.dataset.compareRemove);
+        return;
+      }
       if (e.target.closest('#compare-clear')) { clearCompare(); return; }
       if (e.target.closest('#compare-open')) { openCompareModal(); return; }
-      if (e.target.closest('#compare-close-btn') || (e.target === $compareOverlay)) { closeCompareModal(); return; }
+      if (e.target.closest('#compare-close-btn') || (e.target === $compareOverlay)) {
+        closeCompareModal();
+        return;
+      }
       if (e.target.closest('#compare-share')) { shareCompareLink(); return; }
       if (e.target.closest('#compare-copy')) { copyCompareSummary(); return; }
       const retryCompare = e.target.closest('[data-compare-retry]');
-      if (retryCompare) { const [id, section] = retryCompare.dataset.compareRetry.split(':'); retryCompareSection(Number(id), section); return; }
+      if (retryCompare) {
+        const [id, section] = retryCompare.dataset.compareRetry.split(':');
+        retryCompareSection(Number(id), section);
+        return;
+      }
 
       // Deputy card click
       const card = e.target.closest('.deputy-card');

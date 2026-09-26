@@ -84,6 +84,21 @@ describe('API window and Components comparison', () => {
     expect(modal).toContain('Gastos CEAP');
     expect(modal).toContain('Dados Abertos da Câmara');
   });
+
+  it('não marca melhor/pior quando um bloco está vazio e valores são formatados', () => {
+    loadAPI();
+    const Components = loadComponents();
+    const summaries = {
+      1: { id: 1, gastos: { status: 'empty', data: null } },
+      2: { id: 2, gastos: { status: 'ok', data: { total: 377815.66, mediaMensal: 41979.5, fornecedores: 46, maiorCategoria: null, porCategoria: [] } } },
+    };
+    const modal = Components.compareModal(summaries, [1, 2], {});
+    const totalRow = modal.split('Total')[1];
+    expect(totalRow).not.toContain('compare-best');
+    expect(totalRow).not.toContain('compare-worst');
+    expect(modal).toContain('R$');
+    expect(modal).not.toContain('377815.66');
+  });
 });
 
 describe('App comparador', () => {

@@ -36,7 +36,6 @@ const Components = (() => {
     return `
       <article class="deputy-card" data-deputy-id="${deputy.id}" role="button" tabindex="0"
                aria-label="Ver perfil de ${deputy.nome}">
-        ${compareToggle(deputy, compare, 'card')}
         <div class="deputy-card-header">
           <img
             class="deputy-photo"
@@ -54,9 +53,10 @@ const Components = (() => {
           </div>
         </div>
         <div class="deputy-card-footer">
-          <div class="deputy-email" title="${deputy.email || 'E-mail não cadastrado'}" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+          <div class="deputy-email" title="${deputy.email || 'E-mail não cadastrado'}" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;">
             ${deputy.email ? deputy.email : '<span style="opacity: 0.6">⚠️ E-mail não cadastrado</span>'}
           </div>
+          ${compareToggle(deputy, compare, 'card')}
         </div>
       </article>
     `;
@@ -1088,7 +1088,9 @@ const Components = (() => {
     const pct = value => value === null || value === undefined ? 'Sem orientação' : `${Number(value).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`;
     const row = (label, section, values, options = {}) => compareRow(label, list.map((s, i) => ({
       value: options.numeric && s[section]?.status === 'ok' ? values[i] : null,
-      html: compareBlockCell(s, section, d => options.render ? options.render(d, i) : escapeHTML(String(values[i] ?? '—'))),
+      html: compareBlockCell(s, section, d => options.render
+        ? options.render(d, i)
+        : (options.format ? options.format(values[i]) : escapeHTML(String(values[i] ?? '—')))),
     })), options);
     const startDate = voteWindow ? API.formatDate(voteWindow.dataInicio) : '—';
     const endDate = voteWindow ? API.formatDate(voteWindow.dataFim) : '—';
