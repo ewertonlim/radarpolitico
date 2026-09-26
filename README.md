@@ -22,7 +22,7 @@ O **Radar Político** é uma aplicação web de transparência pública que perm
 - **Modal do deputado** com perfil (situação, gabinete, e-mail, escolaridade) e quatro abas:
   - **Despesas:** histórico completo da legislatura (todos os anos desde 2023), ordenado do mais recente para o mais antigo, com "Carregar mais"/"Ver todas", totalizadores e gráfico Chart.js por tipo de despesa. Anos que falharem ao carregar são sinalizados com opção de tentar novamente.
   - **Proposições:** proposições de autoria do deputado, com detalhe expansível (ementa detalhada, autores, tramitações e link para o inteiro teor).
-  - **Votações:** votos nominais do deputado em plenário, carregados sob demanda mês a mês, com destaque para o voto e link para o evento na Câmara.
+  - **Votações:** histórico de votos nominais em Plenário, carregado mês a mês, com a orientação do partido e do Governo em cada votação e selos **Seguiu/Divergiu/Sem orientação** indicando se o deputado acompanhou a orientação da sua sigla. Dois indicadores agregados mostram o **Alinhamento com o partido** e o **Alinhamento com o Governo** (em %, considerando apenas votações com orientação registrada), e chips permitem filtrar os votos por "Seguiu o partido" ou "Divergiu do partido". Orientações de federações/blocos (ex.: `Fdr PT-PCdoB-PV`) são associadas aos partidos membros; linhas transversais (Governo, Oposição, Minoria, Maioria) não contam como partido.
   - **Atuação:** comissões e órgãos do deputado (deduplicadas, separadas em "Em exercício"/"Encerradas" com cargo de maior peso e resumo de atuais/direção/encerradas), frentes parlamentares da 57ª Legislatura (com busca local e link para a página da frente) e linha do tempo do histórico de mandato (posse, trocas de partido, licenças, afastamentos e retornos). Cada bloco carrega sob demanda e tem retry isolado em caso de falha.
 - **Ranking Top 10 por despesas:** o componente `Components.rankingTable` está implementado em `js/components.js`, mas ainda não é exibido na interface atual (candidato a melhoria futura).
 - Estados de carregamento (skeleton/shimmer), estados vazios e mensagens de erro em todas as telas.
@@ -77,6 +77,10 @@ Todos os dados vêm da API v2 da Câmara (`BASE_URL` em `js/api.js`), sempre fil
 | `GET /proposicoes/{id}` | Detalhe da proposição (ementa detalhada, inteiro teor). |
 | `GET /proposicoes/{id}/tramitacoes` | Tramitações da proposição (ordenadas da mais recente). |
 | `GET /proposicoes/{id}/autores` | Autores da proposição. |
+| `GET /votacoes?idOrgao=180&dataInicio=AAAA-MM-DD&dataFim=AAAA-MM-DD` | Votações do Plenário no período (aba "Votações"). |
+| `GET /votacoes/{id}/votos` | Votos individuais dos deputados em cada votação nominal. |
+| `GET /votacoes/{id}` | Detalhe da votação (proposições afetadas, evento). |
+| `GET /votacoes/{id}/orientacoes` | Orientações de partidos/blocos e do Governo na votação (base dos selos e indicadores de alinhamento). |
 | `GET /deputados/{id}/orgaos?dataInicio=2023-02-01&itens=100&ordem=DESC&ordenarPor=dataInicio` | Comissões e órgãos do deputado na legislatura (aba "Atuação"; paginado via `links[rel=next]`). |
 | `GET /deputados/{id}/frentes` | Frentes parlamentares do deputado (todas as legislaturas; filtradas para a 57ª no cliente). |
 | `GET /deputados/{id}/historico` | Histórico de partido/situação do mandato (linha do tempo da aba "Atuação"). |

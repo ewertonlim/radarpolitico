@@ -69,6 +69,9 @@ describe('API.getVotosDeputadoPeriodo', () => {
           dados: [{ tipoVoto: 'Sim', deputado_: { id: '7' } }],
         });
       }
+      if (url.includes('/orientacoes')) {
+        return jsonResponse({ dados: [] });
+      }
       if (url.includes('/votacoes/200')) {
         return jsonResponse({
           dados: {
@@ -113,7 +116,7 @@ describe('API.getVotosDeputadoPeriodo', () => {
     expect(progress).toHaveBeenCalled();
     expect(progress).toHaveBeenLastCalledWith(3, 3);
     // caches the month window
-    expect(localStorage.getItem('rp_votos_7_2025-05-01_2025-05-31')).toBeTruthy();
+    expect(localStorage.getItem('rp_votos_7_x_2025-05-01_2025-05-31')).toBeTruthy();
   });
 
   it('does not throw when the detail fetch fails (proposicao=null)', async () => {
@@ -338,5 +341,269 @@ describe('API vote cache windows', () => {
     await API.getVotosDeputadoPeriodo(7, '2025-05-16', '2025-05-31');
 
     expect(listCalls).toBe(2);
+  });
+});
+
+describe('API orientation helpers', () => {
+  const orientacoes = [
+    { siglaPartidoBloco: 'Governo', orientacaoVoto: 'Sim' },
+    { siglaPartidoBloco: 'Oposição', orientacaoVoto: 'Não' },
+    { siglaPartidoBloco: 'PT', orientacaoVoto: 'Sim' },
+    { siglaPartidoBloco: 'Fdr PT-PCdoB-PV', orientacaoVoto: 'Sim' },
+    { siglaPartidoBloco: 'Fdr PSOL-REDE', orientacaoVoto: 'Não' },
+  ];
+
+  it('normalizeVoto maps labels case-insensitively', () => {
+    const API = loadAPI();
+    expect(API.normalizeVoto('sim')).toBe('Sim');
+    expect(API.normalizeVoto(' NÃO ')).toBe('Não');
+    expect(API.normalizeVoto('nao')).toBe('Não');
+    expect(API.normalizeVoto('abstencao')).toBe('Abstenção');
+    expect(API.normalizeVoto('Obstrucao')).toBe('Obstrução');
+    expect(API.normalizeVoto('liberado')).toBe('Liberado');
+    expect(API.normalizeVoto('ARTIGO 17')).toBe('Artigo 17');
+    expect(API.normalizeVoto('')).toBe('');
+    expect(API.normalizeVoto(null)).toBe('');
+    expect(API.normalizeVoto('Outro')).toBe('Outro');
+  });
+
+  it('findOrientacaoPartido matches an exact party line', () => {
+    const API = loadAPI();
+    expect(API.findOrientacaoPartido(orientacoes, 'PT')).toBe('Sim');
+    expect(API.findOrientacaoPartido(orientacoes, 'pt')).toBe('Sim');
+  });
+
+  it('findOrientacaoPartido falls back to federação/bloco lines', () => {
+    const API = loadAPI();
+    const semPT = orientacoes.filter(o => o.siglaPartidoBloco !== 'PT');
+    expect(API.findOrientacaoPartido(semPT, 'PT')).toBe('Sim');
+    expect(API.findOrientacaoPartido(semPT, 'PCdoB')).toBe('Sim');
+    expect(API.findOrientacaoPartido(semPT, 'PV')).toBe('Sim');
+    expect(API.findOrientacaoPartido(semPT, 'REDE')).toBe('Não');
+    expect(API.findOrientacaoPartido(semPT, 'PSOL')).toBe('Não');
+  });
+
+  it('findOrientacaoPartido ignores transversal lines and returns null without match', () => {
+    const API = loadAPI();
+    const soTransversais = [
+      { siglaPartidoBloco: 'Governo', orientacaoVoto: 'Sim' },
+      { siglaPartidoBloco: 'Oposição', orientacaoVoto: 'Não' },
+      { siglaPartidoBloco: 'Minoria', orientacaoVoto: 'Não' },
+      { siglaPartidoBloco: 'Maioria', orientacaoVoto: 'Sim' },
+    ];
+    expect(API.findOrientacaoPartido(soTransversais, 'PT')).toBeNull();
+    expect(API.findOrientacaoPartido([], 'PT')).toBeNull();
+    expect(API.findOrientacaoPartido(orientacoes, null)).toBeNull();
+    expect(API.findOrientacaoPartido(orientacoes, 'PL')).toBeNull();
+  });
+
+  it('findOrientacaoGoverno returns the Governo line orientation', () => {
+    const API = loadAPI();
+    expect(API.findOrientacaoGoverno(orientacoes)).toBe('Sim');
+    expect(API.findOrientacaoGoverno([])).toBeNull();
+  });
+
+  it('classificarAlinhamento classifies seguiu/divergiu/null', () => {
+    const API = loadAPI();
+    expect(API.classificarAlinhamento('Sim', 'Sim')).toBe('seguiu');
+    expect(API.classificarAlinhamento('Não', 'Sim')).toBe('divergiu');
+    expect(API.classificarAlinhamento('Sim', 'Liberado')).toBeNull();
+    expect(API.classificarAlinhamento('Sim', '')).toBeNull();
+    expect(API.classificarAlinhamento('Sim', null)).toBeNull();
+    expect(API.classificarAlinhamento('Obstrução', 'Sim')).toBe('divergiu');
+    expect(API.classificarAlinhamento('Obstrução', 'Obstrução')).toBe('seguiu');
+    expect(API.classificarAlinhamento('Artigo 17', 'Sim')).toBeNull();
+    expect(API.classificarAlinhamento('', 'Sim')).toBeNull();
+  });
+});
+
+describe('API.getVotosDeputadoPeriodo orientações', () => {
+  const votacao = {
+    id: 300,
+    uriEvento: 'https://dadosabertos.camara.leg.br/api/v2/eventos/1',
+    dataHoraRegistro: '2025-07-10T15:00:00',
+    descricao: 'Votação nominal',
+  };
+
+  function mockBase(orientacoesImpl) {
+    fetch.mockImplementation(async (url) => {
+      if (url.match(/\/votacoes\?/)) {
+        return jsonResponse({ dados: [votacao], links: [] });
+      }
+      if (url.includes('/votacoes/300/orientacoes')) {
+        return orientacoesImpl(url);
+      }
+      if (url.includes('/votacoes/300/votos')) {
+        return jsonResponse({ dados: [{ tipoVoto: 'Sim', deputado_: { id: 7 } }] });
+      }
+      if (url.includes('/votacoes/300')) {
+        return jsonResponse({ dados: { id: 300 } });
+      }
+      return jsonResponse({ dados: [], links: [] });
+    });
+  }
+
+  it('enriches items with party/Governo orientation and alignment', async () => {
+    vi.useFakeTimers();
+    const API = loadAPI();
+    mockBase(async () => jsonResponse({
+      dados: [
+        { siglaPartidoBloco: 'Governo', orientacaoVoto: 'Não' },
+        { siglaPartidoBloco: 'PT', orientacaoVoto: 'Sim' },
+      ],
+    }));
+
+    const promise = API.getVotosDeputadoPeriodo(7, '2025-07-01', '2025-07-31', null, 'PT');
+    await vi.advanceTimersByTimeAsync(30000);
+    const items = await promise;
+
+    expect(items).toHaveLength(1);
+    expect(items[0].siglaPartido).toBe('PT');
+    expect(items[0].orientacaoPartido).toBe('Sim');
+    expect(items[0].orientacaoGoverno).toBe('Não');
+    expect(items[0].alinhamentoPartido).toBe('seguiu');
+    expect(items[0].alinhamentoGoverno).toBe('divergiu');
+    expect(items[0].orientacoesErro).toBe(false);
+    // cache key includes the party sigla
+    expect(localStorage.getItem('rp_votos_7_PT_2025-07-01_2025-07-31')).toBeTruthy();
+  });
+
+  it('marks orientacoesErro when the orientações request fails', async () => {
+    vi.useFakeTimers();
+    const API = loadAPI();
+    mockBase(async () => ({ ok: false, status: 500, statusText: 'Server Error', json: async () => ({}) }));
+
+    const promise = API.getVotosDeputadoPeriodo(7, '2025-07-01', '2025-07-31', null, 'PT');
+    await vi.advanceTimersByTimeAsync(60000);
+    const items = await promise;
+
+    expect(items).toHaveLength(1);
+    expect(items[0].orientacoesErro).toBe(true);
+    expect(items[0].orientacaoPartido).toBeNull();
+    expect(items[0].alinhamentoPartido).toBeNull();
+  });
+
+  it('invalidates v1 localStorage entries and refetches', async () => {
+    vi.useFakeTimers();
+    const API = loadAPI();
+    localStorage.setItem('rp_votos_7_x_2025-08-01_2025-08-31',
+      JSON.stringify({ ts: Date.now(), data: [{ stale: true }] }));
+    let listCalls = 0;
+    fetch.mockImplementation(async (url) => {
+      if (url.match(/\/votacoes\?/)) {
+        listCalls++;
+        return jsonResponse({ dados: [], links: [] });
+      }
+      return jsonResponse({ dados: [] });
+    });
+
+    const promise = API.getVotosDeputadoPeriodo(7, '2025-08-01', '2025-08-31');
+    await vi.advanceTimersByTimeAsync(30000);
+    const items = await promise;
+
+    expect(listCalls).toBe(1);
+    expect(items).toEqual([]);
+  });
+});
+
+describe('Components alignment UI', () => {
+  const baseItem = {
+    idVotacao: 300,
+    idEvento: null,
+    dataHoraRegistro: '2025-07-10T15:00:00',
+    descricao: 'Votação nominal',
+    voto: 'Não',
+    proposicao: null,
+    siglaPartido: 'PT',
+    orientacaoPartido: 'Sim',
+    orientacaoGoverno: 'Sim',
+    alinhamentoPartido: 'divergiu',
+    alinhamentoGoverno: 'divergiu',
+    orientacoesErro: false,
+  };
+
+  it('computeAlignmentStats counts only classified items', () => {
+    loadAPI();
+    const Components = loadComponents();
+    const stats = Components.computeAlignmentStats([
+      { alinhamentoPartido: 'seguiu', alinhamentoGoverno: 'seguiu' },
+      { alinhamentoPartido: 'divergiu', alinhamentoGoverno: 'divergiu' },
+      { alinhamentoPartido: null, alinhamentoGoverno: null },
+    ]);
+    expect(stats.partido).toEqual({ seguiu: 1, total: 2 });
+    expect(stats.governo).toEqual({ seguiu: 1, total: 2 });
+    expect(stats.carregadas).toBe(3);
+  });
+
+  it('alignmentSummary renders percentages and counts', () => {
+    loadAPI();
+    const Components = loadComponents();
+    const html = Components.alignmentSummary({
+      partido: { seguiu: 1, total: 2 },
+      governo: { seguiu: 0, total: 0 },
+      carregadas: 2,
+    });
+    expect(html).toContain('50%');
+    expect(html).toContain('(1 de 2)');
+    expect(html).toContain('Alinhamento com o partido');
+    expect(html).toContain('Alinhamento com o Governo');
+    expect(html).toContain('com base em 2 votações nominais carregadas');
+    expect(html).toContain('—');
+  });
+
+  it('voteCard renders orientation line and divergence badge', () => {
+    loadAPI();
+    const Components = loadComponents();
+    const html = Components.voteCard(baseItem);
+    expect(html).toContain('Partido (PT): Sim · Governo: Sim');
+    expect(html).toContain('Divergiu');
+    expect(html).toContain('orientation-badge--divergiu');
+    expect(html).toContain('aria-label="Divergiu da orientação do partido"');
+  });
+
+  it('orientationLine covers skeleton, error and sem orientação states', () => {
+    loadAPI();
+    const Components = loadComponents();
+    expect(Components.orientationLine({})).toContain('skeleton-line');
+    expect(Components.orientationLine({ orientacaoPartido: null, orientacoesErro: true }))
+      .toContain('Orientação indisponível');
+    const none = Components.orientationLine({
+      orientacaoPartido: null, orientacaoGoverno: null, alinhamentoPartido: null,
+      orientacoesErro: false, siglaPartido: 'PT',
+    });
+    expect(none).toContain('Sem orientação');
+    expect(none).toContain('orientation-badge--none');
+  });
+
+  it('votesPanel filters by alinhamentoPartido and marks the active chip', () => {
+    loadAPI();
+    const Components = loadComponents();
+    const seguiu = { ...baseItem, alinhamentoPartido: 'seguiu', descricao: 'VOTOU SIM' };
+    const divergiu = { ...baseItem, descricao: 'VOTOU CONTRA' };
+    const panel = {
+      items: [seguiu, divergiu],
+      loaded: true, loading: false, error: null, exhausted: true,
+      alignmentFilter: 'divergiu',
+    };
+    const html = Components.votesPanel(panel);
+    expect(html).toContain('VOTOU CONTRA');
+    expect(html).not.toContain('VOTOU SIM');
+    expect(html).toContain('data-filter="divergiu" aria-pressed="true"');
+    expect(html).toContain('data-filter="todas" aria-pressed="false"');
+    // resumo continua visível com o filtro ativo
+    expect(html).toContain('alignment-summary');
+  });
+
+  it('votesPanel shows empty-filter state when no item matches', () => {
+    loadAPI();
+    const Components = loadComponents();
+    const seguiu = { ...baseItem, alinhamentoPartido: 'seguiu' };
+    const html = Components.votesPanel({
+      items: [seguiu],
+      loaded: true, loading: false, error: null, exhausted: true,
+      alignmentFilter: 'divergiu',
+    });
+    expect(html).toContain('Nenhum voto neste filtro');
+    expect(html).toContain('alignment-chips');
   });
 });

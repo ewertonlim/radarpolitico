@@ -1113,6 +1113,87 @@ img {
   border-color: var(--border-medium);
 }
 
+.alignment-summary {
+  margin-bottom: var(--space-sm);
+}
+
+.alignment-note {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin: 0 0 var(--space-md);
+}
+
+.alignment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.alignment-chip {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+.alignment-chip:hover {
+  border-color: var(--accent-indigo);
+  color: var(--accent-indigo-light);
+}
+
+.alignment-chip[aria-pressed="true"] {
+  background: var(--accent-indigo-glow);
+  border-color: var(--accent-indigo);
+  color: var(--accent-indigo-light);
+}
+
+.vote-orientation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-sm);
+}
+
+.vote-orientation--error {
+  color: var(--vote-abstain);
+}
+
+.orientation-badge {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.orientation-badge--seguiu {
+  color: var(--accent-emerald-light);
+  background: rgba(16, 185, 129, 0.15);
+  border-color: var(--vote-yes);
+}
+
+.orientation-badge--divergiu {
+  color: var(--accent-rose-light);
+  background: rgba(244, 63, 94, 0.15);
+  border-color: var(--vote-no);
+}
+
+.orientation-badge--none {
+  color: var(--text-secondary);
+  background: rgba(139, 143, 163, 0.15);
+  border-color: var(--vote-abstain);
+}
+
 .vote-list-controls {
   display: flex;
   justify-content: center;
@@ -1800,6 +1881,11 @@ img {
   }
 
   .vote-card-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .vote-orientation {
     flex-direction: column;
     align-items: flex-start;
   }

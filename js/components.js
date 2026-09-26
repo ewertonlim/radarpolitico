@@ -399,11 +399,83 @@ const Components = (() => {
           ${voteBadge(item.voto)}
         </div>
         ${ementa ? `<div class="vote-card-ementa">${escapeHTML(ementa)}</div>` : ''}
+        ${orientationLine(item)}
         <div class="vote-card-meta">
           <span>🗓️ ${dataHora}</span>
           ${item.idEvento ? `<a href="https://www.camara.leg.br/evento-legislativo/${escapeHTML(item.idEvento)}" target="_blank" rel="noopener">Ver na Câmara</a>` : ''}
         </div>
       </li>
+    `;
+  }
+
+  function orientationLine(item) {
+    if (item.orientacaoPartido === undefined) {
+      return '<div class="vote-orientation"><span class="skeleton skeleton-line w-60"></span></div>';
+    }
+    if (item.orientacoesErro) {
+      return '<div class="vote-orientation vote-orientation--error">Orientação indisponível</div>';
+    }
+    const sigla = item.siglaPartido || '';
+    const partido = `Partido (${escapeHTML(sigla)}): ${escapeHTML(item.orientacaoPartido || '—')}`;
+    const governo = `Governo: ${escapeHTML(item.orientacaoGoverno || '—')}`;
+    let badge;
+    if (item.alinhamentoPartido === 'seguiu') {
+      badge = '<span class="orientation-badge orientation-badge--seguiu" aria-label="Seguiu a orientação do partido">Seguiu</span>';
+    } else if (item.alinhamentoPartido === 'divergiu') {
+      badge = '<span class="orientation-badge orientation-badge--divergiu" aria-label="Divergiu da orientação do partido">Divergiu</span>';
+    } else {
+      badge = '<span class="orientation-badge orientation-badge--none" aria-label="Sem orientação do partido">Sem orientação</span>';
+    }
+    return `<div class="vote-orientation">${partido} · ${governo} ${badge}</div>`;
+  }
+
+  function computeAlignmentStats(items = []) {
+    const stats = {
+      partido: { seguiu: 0, total: 0 },
+      governo: { seguiu: 0, total: 0 },
+      carregadas: items.length,
+    };
+    items.forEach((item) => {
+      if (item.alinhamentoPartido === 'seguiu' || item.alinhamentoPartido === 'divergiu') {
+        stats.partido.total++;
+        if (item.alinhamentoPartido === 'seguiu') stats.partido.seguiu++;
+      }
+      if (item.alinhamentoGoverno === 'seguiu' || item.alinhamentoGoverno === 'divergiu') {
+        stats.governo.total++;
+        if (item.alinhamentoGoverno === 'seguiu') stats.governo.seguiu++;
+      }
+    });
+    return stats;
+  }
+
+  function alignmentSummary(stats) {
+    const card = (label, { seguiu, total }) => {
+      const pct = total > 0 ? `${Math.round((seguiu / total) * 100)}%` : '—';
+      return `
+        <div class="summary-card">
+          <div class="summary-card-value">${pct}</div>
+          <div class="summary-card-label">${label} <small>(${seguiu} de ${total})</small></div>
+        </div>
+      `;
+    };
+    return `
+      <div class="summary-cards alignment-summary" title="Considera apenas votações nominais com orientação registrada">
+        ${card('Alinhamento com o partido', stats.partido)}
+        ${card('Alinhamento com o Governo', stats.governo)}
+      </div>
+      <p class="alignment-note">com base em ${stats.carregadas} votações nominais carregadas</p>
+    `;
+  }
+
+  function alignmentFilterChips(active = 'todas') {
+    const chip = (filter, label) =>
+      `<button type="button" class="alignment-chip" data-filter="${filter}" aria-pressed="${active === filter}">${label}</button>`;
+    return `
+      <div class="alignment-chips" role="group" aria-label="Filtrar por alinhamento">
+        ${chip('todas', 'Todas')}
+        ${chip('seguiu', 'Seguiu o partido')}
+        ${chip('divergiu', 'Divergiu do partido')}
+      </div>
     `;
   }
 
@@ -468,7 +540,15 @@ const Components = (() => {
     } else if (v.loaded && v.items.length === 0 && !v.loading) {
       html += '<div class="empty-state"><div class="empty-state-icon">🗳️</div><div class="empty-state-text">Nenhum voto nominal encontrado neste período</div></div>';
     } else {
-      html += voteList(v.items);
+      html += alignmentSummary(computeAlignmentStats(v.items));
+      const filtro = v.alignmentFilter || 'todas';
+      html += alignmentFilterChips(filtro);
+      const items = filtro === 'todas'
+        ? v.items
+        : v.items.filter(item => item.alinhamentoPartido === filtro);
+      html += items.length > 0
+        ? voteList(items)
+        : '<div class="empty-state"><div class="empty-state-text">Nenhum voto neste filtro</div></div>';
     }
 
     html += voteListControls(v);
@@ -996,6 +1076,10 @@ const Components = (() => {
     propositionDetailSkeleton,
     propositionDetailError,
     voteBadge,
+    orientationLine,
+    computeAlignmentStats,
+    alignmentSummary,
+    alignmentFilterChips,
     voteCard,
     voteList,
     voteListSkeleton,
