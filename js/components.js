@@ -176,7 +176,7 @@ const Components = (() => {
   // ==========================================
   // Deputy Modal / Profile
   // ==========================================
-  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20, votes = null, view = {}) {
+  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20, votes = null, activity = null, view = {}) {
     const {
       expensesView = 'notas',
       supplierFilter = null,
@@ -230,6 +230,7 @@ const Components = (() => {
         <button class="modal-tab active" data-tab="expenses">💰 Gastos</button>
         <button class="modal-tab" data-tab="propositions">📋 Proposições</button>
         <button class="modal-tab" data-tab="votes">🗳️ Votações</button>
+        <button class="modal-tab" data-tab="activity">🏛️ Atuação</button>
       </div>
 
       <div class="modal-content">
@@ -308,6 +309,9 @@ const Components = (() => {
 
         <!-- VOTES TAB -->
         <div class="tab-panel" id="tab-votes">${votesPanel(votes)}</div>
+
+        <!-- ACTIVITY TAB -->
+        <div class="tab-panel" id="tab-activity">${activityPanel(activity)}</div>
       </div>
     `;
   }
@@ -569,11 +573,83 @@ const Components = (() => {
           ${voteBadge(item.voto)}
         </div>
         ${ementa ? `<div class="vote-card-ementa">${escapeHTML(ementa)}</div>` : ''}
+        ${orientationLine(item)}
         <div class="vote-card-meta">
           <span>🗓️ ${dataHora}</span>
           ${item.idEvento ? `<a href="https://www.camara.leg.br/evento-legislativo/${escapeHTML(item.idEvento)}" target="_blank" rel="noopener">Ver na Câmara</a>` : ''}
         </div>
       </li>
+    `;
+  }
+
+  function orientationLine(item) {
+    if (item.orientacaoPartido === undefined) {
+      return '<div class="vote-orientation"><span class="skeleton skeleton-line w-60"></span></div>';
+    }
+    if (item.orientacoesErro) {
+      return '<div class="vote-orientation vote-orientation--error">Orientação indisponível</div>';
+    }
+    const sigla = item.siglaPartido || '';
+    const partido = `Partido (${escapeHTML(sigla)}): ${escapeHTML(item.orientacaoPartido || '—')}`;
+    const governo = `Governo: ${escapeHTML(item.orientacaoGoverno || '—')}`;
+    let badge;
+    if (item.alinhamentoPartido === 'seguiu') {
+      badge = '<span class="orientation-badge orientation-badge--seguiu" aria-label="Seguiu a orientação do partido">Seguiu</span>';
+    } else if (item.alinhamentoPartido === 'divergiu') {
+      badge = '<span class="orientation-badge orientation-badge--divergiu" aria-label="Divergiu da orientação do partido">Divergiu</span>';
+    } else {
+      badge = '<span class="orientation-badge orientation-badge--none" aria-label="Sem orientação do partido">Sem orientação</span>';
+    }
+    return `<div class="vote-orientation">${partido} · ${governo} ${badge}</div>`;
+  }
+
+  function computeAlignmentStats(items = []) {
+    const stats = {
+      partido: { seguiu: 0, total: 0 },
+      governo: { seguiu: 0, total: 0 },
+      carregadas: items.length,
+    };
+    items.forEach((item) => {
+      if (item.alinhamentoPartido === 'seguiu' || item.alinhamentoPartido === 'divergiu') {
+        stats.partido.total++;
+        if (item.alinhamentoPartido === 'seguiu') stats.partido.seguiu++;
+      }
+      if (item.alinhamentoGoverno === 'seguiu' || item.alinhamentoGoverno === 'divergiu') {
+        stats.governo.total++;
+        if (item.alinhamentoGoverno === 'seguiu') stats.governo.seguiu++;
+      }
+    });
+    return stats;
+  }
+
+  function alignmentSummary(stats) {
+    const card = (label, { seguiu, total }) => {
+      const pct = total > 0 ? `${Math.round((seguiu / total) * 100)}%` : '—';
+      return `
+        <div class="summary-card">
+          <div class="summary-card-value">${pct}</div>
+          <div class="summary-card-label">${label} <small>(${seguiu} de ${total})</small></div>
+        </div>
+      `;
+    };
+    return `
+      <div class="summary-cards alignment-summary" title="Considera apenas votações nominais com orientação registrada">
+        ${card('Alinhamento com o partido', stats.partido)}
+        ${card('Alinhamento com o Governo', stats.governo)}
+      </div>
+      <p class="alignment-note">com base em ${stats.carregadas} votações nominais carregadas</p>
+    `;
+  }
+
+  function alignmentFilterChips(active = 'todas') {
+    const chip = (filter, label) =>
+      `<button type="button" class="alignment-chip" data-filter="${filter}" aria-pressed="${active === filter}">${label}</button>`;
+    return `
+      <div class="alignment-chips" role="group" aria-label="Filtrar por alinhamento">
+        ${chip('todas', 'Todas')}
+        ${chip('seguiu', 'Seguiu o partido')}
+        ${chip('divergiu', 'Divergiu do partido')}
+      </div>
     `;
   }
 
@@ -638,12 +714,214 @@ const Components = (() => {
     } else if (v.loaded && v.items.length === 0 && !v.loading) {
       html += '<div class="empty-state"><div class="empty-state-icon">🗳️</div><div class="empty-state-text">Nenhum voto nominal encontrado neste período</div></div>';
     } else {
-      html += voteList(v.items);
+      html += alignmentSummary(computeAlignmentStats(v.items));
+      const filtro = v.alignmentFilter || 'todas';
+      html += alignmentFilterChips(filtro);
+      const items = filtro === 'todas'
+        ? v.items
+        : v.items.filter(item => item.alinhamentoPartido === filtro);
+      html += items.length > 0
+        ? voteList(items)
+        : '<div class="empty-state"><div class="empty-state-text">Nenhum voto neste filtro</div></div>';
     }
 
     html += voteListControls(v);
     html += '</div>';
     return html;
+  }
+
+  // ==========================================
+  // Activity (Atuação) tab — comissões, frentes, histórico
+  // ==========================================
+  function activitySkeleton() {
+    const block = `
+      <div class="skeleton-card" style="margin-bottom:var(--space-md)">
+        <div class="skeleton skeleton-line w-60" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line w-30"></div>
+      </div>
+    `;
+    return `<div class="activity-skeleton">${block.repeat(2)}</div>`;
+  }
+
+  function activityBlockError(bloco, msg) {
+    return `
+      <div class="error-banner" style="margin-top:var(--space-sm)">
+        ⚠️ Erro ao carregar dados.
+        <br><small>${escapeHTML(msg)}</small>
+        <button class="btn-load-more" data-activity-retry="${escapeHTML(bloco)}" type="button">Tentar novamente</button>
+      </div>
+    `;
+  }
+
+  function orgaoItem(o) {
+    const badgeVariant = o.peso >= 4 ? 'orgao-badge--presidente'
+      : o.peso === 3 ? 'orgao-badge--vice' : '';
+    const periodo = `${API.formatDate(o.inicio)} – ${o.fim ? API.formatDate(o.fim) : 'atual'}`;
+    return `
+      <li class="orgao-item">
+        <div class="orgao-item-info">
+          <div class="orgao-item-nome" title="${escapeHTML(o.nome)}">${escapeHTML(o.sigla)} — ${escapeHTML(o.nome)}</div>
+          <div class="orgao-item-periodo">${periodo}</div>
+        </div>
+        <span class="orgao-badge ${badgeVariant}">${escapeHTML(o.cargo || '—')}</span>
+      </li>
+    `;
+  }
+
+  function orgaosBlock(o = {}) {
+    if (o.loading) return activitySkeleton();
+    if (o.error) return activityBlockError('orgaos', o.error);
+
+    const items = o.data || [];
+    if (items.length === 0) {
+      return '<div class="empty-state"><div class="empty-state-icon">🏛️</div><div class="empty-state-text">Nenhuma comissão registrada na 57ª Legislatura</div></div>';
+    }
+
+    const atuais = items.filter(i => i.emExercicio);
+    const encerradas = items.filter(i => !i.emExercicio);
+    const direcao = items.filter(i => i.peso >= 3).length;
+
+    const summary = `
+      <div class="activity-summary">
+        ${atuais.length} atuais · ${direcao} cargos de direção · ${encerradas.length} encerradas
+      </div>
+    `;
+
+    const VISIBLE = 8;
+    const showAll = !!o.showAll;
+
+    const section = (title, list, offset) => {
+      if (list.length === 0) return '';
+      const shown = showAll ? list : list.slice(0, VISIBLE);
+      const remaining = list.length - shown.length;
+      return `
+        <h4 class="activity-subtitle">${title}</h4>
+        <ul class="orgao-list">${shown.map(orgaoItem).join('')}</ul>
+        ${remaining > 0 ? `
+          <div class="activity-controls">
+            <button class="btn-load-more" data-activity-show-all="orgaos" type="button">Ver todas (${list.length})</button>
+          </div>` : ''}
+      `;
+    };
+
+    const lessBtn = showAll ? `
+      <div class="activity-controls">
+        <button class="btn-load-more" data-activity-show-all="orgaos" type="button">Ver menos</button>
+      </div>` : '';
+
+    return `
+      ${summary}
+      ${section('Em exercício', atuais)}
+      ${section('Encerradas', encerradas)}
+      ${lessBtn}
+    `;
+  }
+
+  function frenteItem(f) {
+    return `
+      <li class="frente-item">
+        <a href="https://www.camara.leg.br/frentes/${escapeHTML(f.id)}" target="_blank" rel="noopener noreferrer">
+          ${escapeHTML(f.titulo)}
+        </a>
+      </li>
+    `;
+  }
+
+  function frentesListInner(f = {}) {
+    const items = f.data || [];
+    const query = (f.query || '').toLowerCase();
+    const filtered = query
+      ? items.filter(item => String(item.titulo || '').toLowerCase().includes(query))
+      : items;
+
+    const VISIBLE = 10;
+    const showAll = !!f.showAll;
+    const shown = showAll ? filtered : filtered.slice(0, VISIBLE);
+    const remaining = filtered.length - shown.length;
+
+    return `
+      ${filtered.length === 0
+        ? '<div class="empty-state"><div class="empty-state-text">Nenhuma frente encontrada para essa busca.</div></div>'
+        : `<ul class="frente-list">${shown.map(frenteItem).join('')}</ul>`}
+      ${remaining > 0 ? `
+        <div class="activity-controls">
+          <button class="btn-load-more" data-activity-show-all="frentes" type="button">Ver todas (${filtered.length})</button>
+        </div>` : ''}
+      ${showAll && filtered.length > VISIBLE ? `
+        <div class="activity-controls">
+          <button class="btn-load-more" data-activity-show-all="frentes" type="button">Ver menos</button>
+        </div>` : ''}
+    `;
+  }
+
+  function frentesBlock(f = {}) {
+    if (f.loading) return activitySkeleton();
+    if (f.error) return activityBlockError('frentes', f.error);
+
+    const items = f.data || [];
+    if (items.length === 0) {
+      return '<div class="empty-state"><div class="empty-state-icon">👥</div><div class="empty-state-text">Nenhuma frente parlamentar na 57ª Legislatura</div></div>';
+    }
+
+    return `
+      <input id="frentes-search" class="frentes-search" type="search"
+             placeholder="Buscar frente..." value="${escapeHTML(f.query || '')}" autocomplete="off" />
+      <div id="frentes-list">${frentesListInner(f)}</div>
+    `;
+  }
+
+  function historicoItem(e) {
+    const isTroca = e.tipo === 'troca_partido';
+    return `
+      <li class="timeline-event ${isTroca ? 'timeline-event--troca' : ''}">
+        <div class="timeline-date">${API.formatDate(e.data)}</div>
+        <div class="timeline-desc">${escapeHTML(e.descricao)}</div>
+      </li>
+    `;
+  }
+
+  function historicoBlock(h = {}) {
+    if (h.loading) return activitySkeleton();
+    if (h.error) return activityBlockError('historico', h.error);
+
+    const items = h.data || [];
+    if (items.length === 0) {
+      return '<div class="empty-state"><div class="empty-state-icon">📜</div><div class="empty-state-text">Nenhum evento de mandato registrado</div></div>';
+    }
+
+    const trocas = API.countPartyChanges(items);
+    const badge = trocas > 0
+      ? `<span class="party-change-badge">🔁 Trocou de partido ${trocas} vez(es)</span>`
+      : '<span class="party-change-badge party-change-badge--none">Sem troca de partido na 57ª Legislatura</span>';
+
+    return `
+      <div class="activity-summary">${badge}</div>
+      <ul class="timeline">${items.map(historicoItem).join('')}</ul>
+    `;
+  }
+
+  function activityPanel(activity) {
+    if (!activity || (!activity.loaded && !activity.loading)) {
+      return '<div class="activity-panel"></div>';
+    }
+
+    return `
+      <div class="activity-panel">
+        <div class="activity-block" id="activity-orgaos">
+          <h3 class="activity-block-title">🏛️ Comissões e órgãos</h3>
+          ${orgaosBlock(activity.orgaos)}
+        </div>
+        <div class="activity-block" id="activity-frentes">
+          <h3 class="activity-block-title">👥 Frentes parlamentares (${(activity.frentes.data || []).length})</h3>
+          ${frentesBlock(activity.frentes)}
+        </div>
+        <div class="activity-block" id="activity-historico">
+          <h3 class="activity-block-title">📜 Histórico no mandato</h3>
+          ${historicoBlock(activity.historico)}
+        </div>
+      </div>
+    `;
   }
 
   function camaraFichaURL(id) {
@@ -1052,11 +1330,25 @@ const Components = (() => {
     propositionDetailSkeleton,
     propositionDetailError,
     voteBadge,
+    orientationLine,
+    computeAlignmentStats,
+    alignmentSummary,
+    alignmentFilterChips,
     voteCard,
     voteList,
     voteListSkeleton,
     voteListControls,
     votesPanel,
+    activityPanel,
+    activitySkeleton,
+    activityBlockError,
+    orgaosBlock,
+    orgaoItem,
+    frentesBlock,
+    frentesListInner,
+    frenteItem,
+    historicoBlock,
+    historicoItem,
     animateCounters,
     animateValue,
     renderExpenseChart,
