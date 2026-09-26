@@ -1115,8 +1115,8 @@ const Components = (() => {
         <section class="compare-section"><h3 class="compare-section-title">🗳️ Votações (janela: ${startDate} – ${endDate})</h3>
           ${votesStatus === 'loading' && votesProgress ? `<p id="compare-votes-progress" class="compare-progress" role="status">${escapeHTML(votesProgress)}</p>` : '<p id="compare-votes-progress" class="compare-progress" role="status"></p>'}
           ${row('Votos registrados', 'votacoes', votacoes.map(v => v.registrados), { better: 'max', numeric: true, format: number })}
-          ${row('Alinhamento c/ partido', 'votacoes', votacoes.map(v => v.partido), { render: d => d.pct === null ? 'Sem orientação' : `${pct(d.pct)} (${d.seguiu} de ${d.comOrientacao})` })}
-          ${row('Alinhamento c/ Governo', 'votacoes', votacoes.map(v => v.governo), { render: d => d.pct === null ? 'Sem orientação' : `${pct(d.pct)} (${d.seguiu} de ${d.comOrientacao})` })}
+          ${row('Alinhamento c/ partido', 'votacoes', votacoes.map(v => v.partido), { render: d => d.partido?.pct == null ? 'Sem orientação' : `${pct(d.partido.pct)} (${d.partido.seguiu} de ${d.partido.comOrientacao})` })}
+          ${row('Alinhamento c/ Governo', 'votacoes', votacoes.map(v => v.governo), { render: d => d.governo?.pct == null ? 'Sem orientação' : `${pct(d.governo.pct)} (${d.governo.seguiu} de ${d.governo.comOrientacao})` })}
           ${row('Não registrado', 'votacoes', votacoes.map(v => v.pctNaoRegistrado), { better: 'min', numeric: true, format: pct })}
         </section>
         <section class="compare-section"><h3 class="compare-section-title">🏛️ Atuação</h3>
