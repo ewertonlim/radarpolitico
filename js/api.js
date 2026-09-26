@@ -1158,6 +1158,74 @@ const API = (() => {
   }
 
   /**
+   * Group expenses by supplier (CNPJ/CPF digits, fallback `nome:<NOME>`), sorted by total desc.
+   * @param {Array} despesas normalized expenses
+   * @returns {Array<{key, cnpj, nome, isCPF, total, notas, tipos, primeira, ultima, share}>}
+   */
+  function aggregateSuppliers(despesas = []) {
+    const map = new Map();
+    let grandTotal = 0;
+
+    for (const e of despesas) {
+      const digits = String(e.cnpjCpfFornecedor || '').replace(/\D/g, '');
+      const nome = String(e.nomeFornecedor || '').trim();
+      const key = digits ? digits : `nome:${nome.toUpperCase() || 'FORNECEDOR NÃO INFORMADO'}`;
+      const valor = Number(e.valorLiquido) || 0;
+      const data = e.dataDocumento || null;
+      const tipo = e.tipoDespesa || null;
+
+      let s = map.get(key);
+      if (!s) {
+        s = {
+          key,
+          cnpj: digits || null,
+          nome: nome || 'Fornecedor não informado',
+          isCPF: digits.length === 11,
+          total: 0,
+          notas: 0,
+          tipos: [],
+          primeira: null,
+          ultima: null,
+          share: 0,
+        };
+        map.set(key, s);
+      }
+      s.total += valor;
+      s.notas += 1;
+      if (tipo && !s.tipos.includes(tipo)) s.tipos.push(tipo);
+      if (data) {
+        if (!s.primeira || data < s.primeira) s.primeira = data;
+        if (!s.ultima || data > s.ultima) s.ultima = data;
+      }
+      grandTotal += valor;
+    }
+
+    const list = [...map.values()].sort((a, b) => b.total - a.total || b.notas - a.notas);
+    for (const s of list) s.share = grandTotal > 0 ? s.total / grandTotal : 0;
+    return list;
+  }
+
+  /**
+   * Concentration indicators (Top1/Top3 shares, HHI) over an aggregated supplier list.
+   * Alta concentração: Top1 ≥ 30% OU Top3 ≥ 60%. HHI: baixa < 0.15, média 0.15–0.25, alta > 0.25.
+   * @param {Array} suppliers output of aggregateSuppliers
+   */
+  function concentrationStats(suppliers = []) {
+    const top1Share = suppliers[0]?.share || 0;
+    const top3Share = suppliers.slice(0, 3).reduce((sum, s) => sum + s.share, 0);
+    const hhi = suppliers.reduce((sum, s) => sum + s.share * s.share, 0);
+    const nivel = hhi > 0.25 ? 'alta' : hhi >= 0.15 ? 'media' : 'baixa';
+    return {
+      top1Share,
+      top3Share,
+      hhi,
+      nivel,
+      altaConcentracao: top1Share >= 0.3 || top3Share >= 0.6,
+      totalFornecedores: suppliers.length,
+    };
+  }
+
+  /**
    * Brazilian states list
    */
   const UFS = [
@@ -1177,6 +1245,8 @@ const API = (() => {
     getAllDespesas,
     getAllDespesasLegislatura,
     sortDespesasDesc,
+    aggregateSuppliers,
+    concentrationStats,
     getDeputadoProposicoes,
     getProposicoes,
     getProposicaoDetalhe,

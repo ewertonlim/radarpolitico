@@ -29,6 +29,9 @@ const App = (() => {
       expensesVisible: 20,
       expensesPageSize: 20,
       failedYears: [],
+      expensesView: 'notas',
+      supplierFilter: null,
+      suppliers: [],
       expandedPropId: null,
       propDetails: {},
       votes: {
@@ -221,6 +224,9 @@ const App = (() => {
         expensesVisible: state.modal.expensesPageSize,
         expensesPageSize: state.modal.expensesPageSize,
         failedYears,
+        expensesView: 'notas',
+        supplierFilter: null,
+        suppliers: API.aggregateSuppliers(expenses),
         expandedPropId: null,
         propDetails: {},
         votes: {
@@ -251,7 +257,7 @@ const App = (() => {
 
   function renderModal() {
     const activeTab = $modal.querySelector('.modal-tab.active')?.dataset.tab;
-    const { details, propositions, expensesAll, expensesVisible, failedYears, votes, activity } = state.modal;
+    const { details, propositions, expensesAll, expensesVisible, failedYears, votes, activity, expensesView, supplierFilter, suppliers } = state.modal;
 
     const warningBanner = failedYears.length > 0 ? `
       <div class="error-banner" id="expenses-warning" style="margin:1rem 1rem 0;padding:0.6rem 1rem;font-size:var(--fs-xs)">
@@ -263,12 +269,17 @@ const App = (() => {
     $modal.innerHTML = `
       <button class="modal-close" id="modal-close-btn">✕</button>
       ${warningBanner}
-      ${Components.deputyModal(details, expensesAll, propositions, expensesVisible, votes, activity)}
+      ${Components.deputyModal(details, expensesAll, propositions, expensesVisible, votes, activity, {
+        expensesView, supplierFilter, suppliers, failedYears,
+      })}
     `;
 
-    // Render chart
+    // Render charts
     setTimeout(() => {
       Components.renderExpenseChart('expense-chart', expensesAll);
+      if (state.modal.expensesView === 'fornecedores') {
+        Components.renderSupplierChart('supplier-chart', state.modal.suppliers);
+      }
     }, 100);
 
     // Bind tab switching
@@ -276,21 +287,78 @@ const App = (() => {
     if (activeTab && activeTab !== 'expenses') activateTab(activeTab);
   }
 
+  // Expenses currently listed in the "Notas" view (respects the supplier filter)
+  function visibleExpenses() {
+    const { expensesAll, supplierFilter } = state.modal;
+    return Components.filterExpensesBySupplier(expensesAll, supplierFilter);
+  }
+
   // Re-renders only the expense list + controls (keeps the Chart.js canvas intact)
   function renderExpenseList() {
-    const { expensesAll, expensesVisible } = state.modal;
+    const { expensesVisible, supplierFilter, suppliers } = state.modal;
+    const list = visibleExpenses();
     const $list = document.getElementById('expense-list');
     const $controls = document.getElementById('expense-list-controls');
+    const $chip = document.getElementById('supplier-filter-chip');
     if (!$list || !$controls) return;
 
-    const shown = Math.min(expensesVisible, expensesAll.length);
-    $list.innerHTML = Components.expenseList(expensesAll, shown);
-    $controls.innerHTML = Components.expenseListControls(shown, expensesAll.length);
+    const shown = Math.min(expensesVisible, list.length);
+    $list.innerHTML = Components.expenseList(list, shown);
+    $controls.innerHTML = Components.expenseListControls(shown, list.length);
+    if ($chip) {
+      const active = supplierFilter ? suppliers.find(s => s.key === supplierFilter) : null;
+      $chip.innerHTML = active ? Components.supplierFilterChip(active.nome) : '';
+    }
   }
 
   function loadMoreExpenses() {
     const m = state.modal;
-    m.expensesVisible = Math.min(m.expensesVisible + m.expensesPageSize, m.expensesAll.length);
+    m.expensesVisible = Math.min(m.expensesVisible + m.expensesPageSize, visibleExpenses().length);
+    renderExpenseList();
+  }
+
+  // ==========================================
+  // Suppliers view (RP-006)
+  // ==========================================
+  function setExpensesView(view) {
+    const m = state.modal;
+    if (view !== 'notas' && view !== 'fornecedores') return;
+    m.expensesView = view;
+
+    $modal.querySelectorAll('.expenses-view-btn').forEach(btn => {
+      const active = btn.dataset.expensesView === view;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    const $notas = document.getElementById('expenses-view-notas');
+    const $forn = document.getElementById('expenses-view-fornecedores');
+    if ($notas) { $notas.hidden = view !== 'notas'; $notas.classList.toggle('active', view === 'notas'); }
+    if ($forn) { $forn.hidden = view !== 'fornecedores'; $forn.classList.toggle('active', view === 'fornecedores'); }
+
+    if (view === 'fornecedores') {
+      Components.renderSupplierChart('supplier-chart', m.suppliers);
+    } else {
+      Components.destroySupplierChart();
+    }
+  }
+
+  function applySupplierFilter(key) {
+    const m = state.modal;
+    if (!key || !m.suppliers.some(s => s.key === key)) return;
+    m.supplierFilter = key;
+    m.expensesVisible = m.expensesPageSize;
+    setExpensesView('notas');
+    renderExpenseList();
+    const $chip = document.getElementById('supplier-filter-chip');
+    if ($chip && typeof $chip.scrollIntoView === 'function') {
+      $chip.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
+
+  function clearSupplierFilter() {
+    const m = state.modal;
+    m.supplierFilter = null;
+    m.expensesVisible = m.expensesPageSize;
     renderExpenseList();
   }
 
@@ -305,14 +373,15 @@ const App = (() => {
     const $list = document.getElementById('expense-list');
     const step = () => {
       if (!$list || !$list.isConnected || !state.modalOpen) return;
-      const next = Math.min(m.expensesVisible + CHUNK, m.expensesAll.length);
-      $list.insertAdjacentHTML('beforeend', Components.expenseList(m.expensesAll.slice(m.expensesVisible, next)));
+      const list = visibleExpenses();
+      const next = Math.min(m.expensesVisible + CHUNK, list.length);
+      $list.insertAdjacentHTML('beforeend', Components.expenseList(list.slice(m.expensesVisible, next)));
       m.expensesVisible = next;
-      if (m.expensesVisible < m.expensesAll.length) {
+      if (m.expensesVisible < list.length) {
         requestAnimationFrame(step);
       } else {
         const $controls = document.getElementById('expense-list-controls');
-        if ($controls) $controls.innerHTML = Components.expenseListControls(m.expensesVisible, m.expensesAll.length);
+        if ($controls) $controls.innerHTML = Components.expenseListControls(m.expensesVisible, list.length);
       }
     };
     requestAnimationFrame(step);
@@ -485,6 +554,8 @@ const App = (() => {
 
     m.expensesAll = API.sortDespesasDesc(m.expensesAll.concat(expenses));
     m.failedYears = failedYears;
+    m.suppliers = API.aggregateSuppliers(m.expensesAll);
+    if (m.supplierFilter && !m.suppliers.some(s => s.key === m.supplierFilter)) m.supplierFilter = null;
     m.expensesVisible = Math.max(m.expensesVisible, m.expensesPageSize);
     renderModal();
   }
@@ -544,6 +615,7 @@ const App = (() => {
   function closeModal() {
     if (!$modalOverlay) return;
     state.modalOpen = false;
+    Components.destroySupplierChart();
     $modalOverlay.classList.remove('active');
     document.body.style.overflow = '';
   }
@@ -609,6 +681,14 @@ const App = (() => {
       if (showAllBtn && !showAllBtn.disabled) { showAllExpenses(); return; }
       const retryBtn = e.target.closest('#expenses-retry');
       if (retryBtn && !retryBtn.disabled) { retryFailedYears(); return; }
+
+      // Suppliers view (toggle, row filter, clear chip)
+      const viewBtn = e.target.closest('.expenses-view-btn[data-expenses-view]');
+      if (viewBtn && state.modalOpen) { setExpensesView(viewBtn.dataset.expensesView); return; }
+      const clearChip = e.target.closest('#supplier-filter-clear');
+      if (clearChip) { clearSupplierFilter(); return; }
+      const supplierRow = e.target.closest('.supplier-row[data-supplier-key]');
+      if (supplierRow && !e.target.closest('a')) { applySupplierFilter(supplierRow.dataset.supplierKey); return; }
 
       // Votes panel controls
       const votesLoadMoreBtn = e.target.closest('#votes-load-more');
@@ -697,6 +777,12 @@ const App = (() => {
           e.preventDefault();
           const id = parseInt(propItem.dataset.propId);
           if (id) togglePropositionDetail(id);
+          return;
+        }
+        const supplierRow = e.target.closest('.supplier-row[data-supplier-key]');
+        if (supplierRow && !e.target.closest('a')) {
+          e.preventDefault();
+          applySupplierFilter(supplierRow.dataset.supplierKey);
         }
       }
     });

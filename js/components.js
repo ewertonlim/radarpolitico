@@ -176,7 +176,17 @@ const Components = (() => {
   // ==========================================
   // Deputy Modal / Profile
   // ==========================================
-  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20, votes = null, activity = null) {
+  function deputyModal(deputy, expenses = [], propositions = [], visibleCount = 20, votes = null, activity = null, view = {}) {
+    const {
+      expensesView = 'notas',
+      supplierFilter = null,
+      suppliers = null,
+      failedYears = [],
+      loading = false,
+    } = view;
+    const supplierList = suppliers || API.aggregateSuppliers(expenses);
+    const activeSupplier = supplierFilter ? supplierList.find(s => s.key === supplierFilter) : null;
+    const listExpenses = activeSupplier ? filterExpensesBySupplier(expenses, supplierFilter) : expenses;
     const photoUrl = deputy.urlFoto || API.getFotoURL(deputy.id);
     const totalExpense = expenses.reduce((sum, e) => sum + (e.valorLiquido || 0), 0);
 
@@ -259,16 +269,27 @@ const Components = (() => {
           </div>
           ` : ''}
 
-          <h3 style="font-size:var(--fs-md);margin-bottom:var(--space-md);color:var(--text-secondary)">
-            Despesas (57ª Legislatura) — mais recentes primeiro
-          </h3>
-          <ul class="expense-list" id="expense-list" aria-live="polite">
-            ${expenseList(expenses, visibleCount)}
-          </ul>
-          <div id="expense-list-controls">
-            ${expenseListControls(Math.min(visibleCount, expenses.length), expenses.length)}
+          <div class="expenses-view-header">
+            <h3 style="font-size:var(--fs-md);color:var(--text-secondary)">
+              ${expensesView === 'fornecedores' ? 'Fornecedores (57ª Legislatura) — quem mais recebeu da CEAP' : 'Despesas (57ª Legislatura) — mais recentes primeiro'}
+            </h3>
+            ${expensesViewToggle(expensesView)}
           </div>
-          ${expenses.length === 0 ? '<div class="empty-state"><div class="empty-state-icon">📭</div><div class="empty-state-text">Nenhuma despesa encontrada para este período.</div></div>' : ''}
+
+          <div id="expenses-view-notas" class="expenses-view ${expensesView === 'notas' ? 'active' : ''}" ${expensesView === 'notas' ? '' : 'hidden'}>
+            <div id="supplier-filter-chip">${activeSupplier ? supplierFilterChip(activeSupplier.nome) : ''}</div>
+            <ul class="expense-list" id="expense-list" aria-live="polite">
+              ${expenseList(listExpenses, visibleCount)}
+            </ul>
+            <div id="expense-list-controls">
+              ${expenseListControls(Math.min(visibleCount, listExpenses.length), listExpenses.length)}
+            </div>
+            ${expenses.length === 0 ? '<div class="empty-state"><div class="empty-state-icon">📭</div><div class="empty-state-text">Nenhuma despesa encontrada para este período.</div></div>' : ''}
+          </div>
+
+          <div id="expenses-view-fornecedores" class="expenses-view ${expensesView === 'fornecedores' ? 'active' : ''}" ${expensesView === 'fornecedores' ? '' : 'hidden'}>
+            ${suppliersPanel(supplierList, API.concentrationStats(supplierList), failedYears, { loading })}
+          </div>
         </div>
 
         <!-- PROPOSITIONS TAB -->
@@ -299,6 +320,159 @@ const Components = (() => {
     return expenses.slice(0, visibleCount).map(expenseItem).join('');
   }
 
+  function supplierKeyOf(expense) {
+    const digits = String(expense.cnpjCpfFornecedor || '').replace(/\D/g, '');
+    if (digits) return digits;
+    const nome = String(expense.nomeFornecedor || '').trim().toUpperCase();
+    return `nome:${nome || 'FORNECEDOR NÃO INFORMADO'}`;
+  }
+
+  function filterExpensesBySupplier(expenses = [], supplierKey = null) {
+    if (!supplierKey) return expenses;
+    return expenses.filter(e => supplierKeyOf(e) === supplierKey);
+  }
+
+  // ==========================================
+  // Suppliers panel (RP-006)
+  // ==========================================
+  function expensesViewToggle(active = 'notas') {
+    const btn = (view, label) => `
+      <button type="button" class="expenses-view-btn ${active === view ? 'active' : ''}"
+              data-expenses-view="${view}" aria-pressed="${active === view ? 'true' : 'false'}">${label}</button>`;
+    return `
+      <div class="expenses-view-toggle" role="group" aria-label="Visualização das despesas">
+        ${btn('notas', '🧾 Notas')}
+        ${btn('fornecedores', '🏢 Fornecedores')}
+      </div>
+    `;
+  }
+
+  function supplierFilterChip(nome) {
+    return `
+      <div class="supplier-filter-chip" role="status">
+        <span>Filtrando por: <strong>${escapeHTML(nome)}</strong></span>
+        <button type="button" class="supplier-filter-clear" id="supplier-filter-clear" aria-label="Limpar filtro de fornecedor">✕</button>
+      </div>
+    `;
+  }
+
+  function formatPercent(share) {
+    return `${(share * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`;
+  }
+
+  function concentrationBadge(stats) {
+    const criterio = 'Alta concentração: maior fornecedor ≥ 30% do total OU 3 maiores ≥ 60%. HHI (Herfindahl-Hirschman): Baixa < 0,15 · Média 0,15–0,25 · Alta > 0,25.';
+    const hhiLabel = { baixa: 'Baixa', media: 'Média', alta: 'Alta' }[stats.nivel] || 'Baixa';
+    const variant = stats.altaConcentracao ? 'alta' : stats.nivel;
+    const label = stats.altaConcentracao ? 'Alta concentração' : `Concentração ${hhiLabel.toLowerCase()}`;
+    return `
+      <span class="badge-concentration badge-concentration-${variant}" title="${escapeHTML(criterio)}" tabindex="0">
+        ${stats.altaConcentracao ? '⚠️ ' : ''}${label}
+      </span>
+      <span class="supplier-stats-text">
+        Top 1 = ${formatPercent(stats.top1Share)} · Top 3 = ${formatPercent(stats.top3Share)} · ${stats.totalFornecedores} ${stats.totalFornecedores === 1 ? 'fornecedor' : 'fornecedores'}
+        · HHI ${stats.hhi.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${hhiLabel})
+      </span>
+    `;
+  }
+
+  function supplierRow(s, idx) {
+    const tipos = s.tipos.map(shortenExpenseType);
+    const uniqueTipos = [...new Set(tipos)];
+    const tiposLabel = uniqueTipos.slice(0, 2).join(', ') + (uniqueTipos.length > 2 ? ` +${uniqueTipos.length - 2}` : '');
+    const doc = s.cnpj ? formatCNPJ(s.cnpj) : '';
+    const cnpjLink = s.cnpj && s.cnpj.length === 14
+      ? `<a class="supplier-cnpj-link" href="https://cnpj.biz/${escapeHTML(s.cnpj)}" target="_blank" rel="noopener noreferrer" title="Consultar CNPJ em base pública">Consultar CNPJ ↗</a>`
+      : '';
+    const pct = Math.max(0, Math.min(100, s.share * 100));
+    return `
+      <tr class="supplier-row" data-supplier-key="${escapeHTML(s.key)}" role="button" tabindex="0"
+          aria-label="Filtrar notas de ${escapeHTML(s.nome)}" title="Clique para ver apenas as notas deste fornecedor">
+        <td class="supplier-col-idx" data-label="#">${idx + 1}</td>
+        <td class="supplier-col-name" data-label="Fornecedor">
+          <div class="supplier-name">${escapeHTML(s.nome)}
+            ${s.isCPF ? '<span class="badge-cpf" title="Documento com 11 dígitos">pessoa física (CPF)</span>' : ''}
+          </div>
+          <div class="supplier-doc">${doc ? escapeHTML(doc) : 'Documento não informado'} ${cnpjLink}</div>
+        </td>
+        <td class="supplier-col-types" data-label="Categoria(s)">${escapeHTML(tiposLabel) || '—'}</td>
+        <td class="supplier-col-count" data-label="Notas">${s.notas}</td>
+        <td class="supplier-col-value" data-label="Valor">${API.formatCurrency(s.total)}</td>
+        <td class="supplier-col-share" data-label="%">
+          <div class="supplier-share">
+            <span class="supplier-share-bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></span>
+            <span class="supplier-share-value">${formatPercent(s.share)}</span>
+          </div>
+        </td>
+      </tr>
+    `;
+  }
+
+  function suppliersPanel(suppliers = [], stats = null, failedYears = [], { loading = false } = {}) {
+    if (loading) return suppliersSkeleton();
+    if (!suppliers.length) {
+      return '<div class="empty-state"><div class="empty-state-icon">🏢</div><div class="empty-state-text">Sem despesas registradas</div></div>';
+    }
+    const st = stats || API.concentrationStats(suppliers);
+    const top = suppliers.slice(0, 10);
+    const rest = suppliers.slice(10);
+    const restTotal = rest.reduce((sum, s) => sum + s.total, 0);
+    const restShare = rest.reduce((sum, s) => sum + s.share, 0);
+    const restNotas = rest.reduce((sum, s) => sum + s.notas, 0);
+
+    const partial = failedYears.length > 0
+      ? `<div class="supplier-partial-warning" role="note">⚠️ Agregado parcial — despesas de ${failedYears.map(escapeHTML).join(', ')} não carregadas</div>`
+      : '';
+
+    return `
+      <div class="suppliers-panel">
+        <div class="suppliers-header">${concentrationBadge(st)}</div>
+        ${partial}
+        <div class="chart-container supplier-chart-container">
+          <canvas id="supplier-chart" aria-label="Distribuição dos gastos entre os 5 maiores fornecedores"></canvas>
+        </div>
+        <div class="supplier-table-wrap">
+          <table class="supplier-table">
+            <thead>
+              <tr>
+                <th scope="col">#</th>
+                <th scope="col">Fornecedor</th>
+                <th scope="col">Categoria(s)</th>
+                <th scope="col">Notas</th>
+                <th scope="col">Valor</th>
+                <th scope="col">%</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${top.map(supplierRow).join('')}
+              ${rest.length > 0 ? `
+              <tr class="supplier-row supplier-row-others">
+                <td class="supplier-col-idx" data-label="#">—</td>
+                <td class="supplier-col-name" data-label="Fornecedor"><div class="supplier-name">Outros (${rest.length} fornecedores)</div></td>
+                <td class="supplier-col-types" data-label="Categoria(s)">—</td>
+                <td class="supplier-col-count" data-label="Notas">${restNotas}</td>
+                <td class="supplier-col-value" data-label="Valor">${API.formatCurrency(restTotal)}</td>
+                <td class="supplier-col-share" data-label="%">
+                  <div class="supplier-share">
+                    <span class="supplier-share-bar" aria-hidden="true"><span style="width:${(restShare * 100).toFixed(1)}%"></span></span>
+                    <span class="supplier-share-value">${formatPercent(restShare)}</span>
+                  </div>
+                </td>
+              </tr>` : ''}
+            </tbody>
+          </table>
+        </div>
+        <p class="supplier-hint">Clique em um fornecedor para filtrar as notas. Link "Consultar CNPJ" abre base pública externa.</p>
+      </div>
+    `;
+  }
+
+  function suppliersSkeleton() {
+    const rows = Array.from({ length: 5 }, () => `
+      <div class="skeleton-line" style="height:44px;margin-bottom:8px"></div>`).join('');
+    return `<div class="suppliers-panel suppliers-skeleton" aria-busy="true">${rows}</div>`;
+  }
+
   function expenseListControls(shown, total) {
     if (total === 0) return '';
     if (shown >= total) {
@@ -325,8 +499,8 @@ const Components = (() => {
       <li class="expense-item">
         <div class="expense-item-info">
           <div class="expense-item-type">${shortenExpenseType(expense.tipoDespesa)}</div>
-          <div class="expense-item-supplier" title="${expense.nomeFornecedor || ''}">
-            ${expense.nomeFornecedor || 'Fornecedor não informado'}
+          <div class="expense-item-supplier" title="${escapeHTML(expense.nomeFornecedor || '')}">
+            ${escapeHTML(expense.nomeFornecedor) || 'Fornecedor não informado'}
             ${expense.cnpjCpfFornecedor ? ` · ${formatCNPJ(expense.cnpjCpfFornecedor)}` : ''}
           </div>
         </div>
@@ -1021,6 +1195,78 @@ const Components = (() => {
     });
   }
 
+  let supplierChartInstance = null;
+
+  function destroySupplierChart() {
+    if (supplierChartInstance) {
+      supplierChartInstance.destroy();
+      supplierChartInstance = null;
+    }
+  }
+
+  function renderSupplierChart(canvasId, suppliers = []) {
+    destroySupplierChart();
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || typeof Chart === 'undefined' || !suppliers.length) return;
+
+    const top = suppliers.slice(0, 5);
+    const rest = suppliers.slice(5);
+    const labels = top.map(s => s.nome.length > 28 ? `${s.nome.slice(0, 27)}…` : s.nome);
+    const data = top.map(s => s.total);
+    if (rest.length) {
+      labels.push(`Outros (${rest.length})`);
+      data.push(rest.reduce((sum, s) => sum + s.total, 0));
+    }
+
+    const colors = ['#f59e0b', '#fbbf24', '#6366f1', '#818cf8', '#10b981', '#555b6e'];
+
+    supplierChartInstance = new Chart(canvas, {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{
+          data,
+          backgroundColor: colors.slice(0, data.length),
+          borderColor: 'rgba(0,0,0,0.3)',
+          borderWidth: 2,
+          hoverOffset: 8,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '60%',
+        plugins: {
+          legend: {
+            position: 'right',
+            labels: {
+              color: '#8b8fa3',
+              font: { family: 'Inter', size: 11 },
+              padding: 12,
+              usePointStyle: true,
+              pointStyleWidth: 10,
+            },
+          },
+          tooltip: {
+            backgroundColor: 'rgba(13, 17, 23, 0.95)',
+            titleColor: '#f0f0f5',
+            bodyColor: '#8b8fa3',
+            borderColor: 'rgba(255,255,255,0.1)',
+            borderWidth: 1,
+            padding: 12,
+            titleFont: { family: 'Inter', weight: 600 },
+            bodyFont: { family: 'Inter' },
+            callbacks: {
+              label: function(ctx) {
+                return ` ${ctx.label}: ${API.formatCurrency(ctx.raw)}`;
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
   // ==========================================
   // Pagination
   // ==========================================
@@ -1071,6 +1317,14 @@ const Components = (() => {
     deputyModal,
     expenseList,
     expenseListControls,
+    filterExpensesBySupplier,
+    supplierKeyOf,
+    expensesViewToggle,
+    suppliersPanel,
+    supplierRow,
+    supplierFilterChip,
+    renderSupplierChart,
+    destroySupplierChart,
     propositionItem,
     propositionDetail,
     propositionDetailSkeleton,
