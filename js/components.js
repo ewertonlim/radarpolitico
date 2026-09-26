@@ -30,12 +30,13 @@ const Components = (() => {
   // ==========================================
   // Deputy Card
   // ==========================================
-  function deputyCard(deputy) {
+  function deputyCard(deputy, compare = { checked: false, disabled: false }) {
     const photoUrl = deputy.urlFoto || API.getFotoURL(deputy.id);
 
     return `
       <article class="deputy-card" data-deputy-id="${deputy.id}" role="button" tabindex="0"
                aria-label="Ver perfil de ${deputy.nome}">
+        ${compareToggle(deputy, compare, 'card')}
         <div class="deputy-card-header">
           <img
             class="deputy-photo"
@@ -183,6 +184,7 @@ const Components = (() => {
       suppliers = null,
       failedYears = [],
       loading = false,
+      compare = { checked: false, disabled: false },
     } = view;
     const supplierList = suppliers || API.aggregateSuppliers(expenses);
     const activeSupplier = supplierFilter ? supplierList.find(s => s.key === supplierFilter) : null;
@@ -209,6 +211,7 @@ const Components = (() => {
         <div>
           <h2 class="modal-name">${deputy.nomeCivil || deputy.nome}</h2>
           <div class="modal-details">
+            ${compareToggle(deputy, compare, 'modal')}
             <span class="badge badge-party" style="font-size:var(--fs-sm);padding:4px 12px">
               ${deputy.siglaPartido || deputy.ultimoStatus?.siglaPartido || ''}
             </span>
@@ -1011,6 +1014,171 @@ const Components = (() => {
   }
 
   // ==========================================
+  // Comparador de Deputados (RP-008)
+  // ==========================================
+  function compareToggle(deputy, { checked = false, disabled = false, variant = 'card' } = {}, forcedVariant) {
+    const actualVariant = forcedVariant || variant;
+    const name = deputy?.nome || deputy?.nomeEleitoral || 'deputado';
+    const label = disabled && !checked ? 'Máximo de 3 deputados' : `${checked ? 'Remover da comparação' : 'Comparar'} ${name}`;
+    return `<button type="button" class="compare-toggle compare-toggle--${actualVariant}${checked ? ' is-checked' : ''}"
+      data-deputy-id="${deputy.id}" aria-pressed="${checked ? 'true' : 'false'}" aria-label="${escapeHTML(label)}" title="${escapeHTML(label)}"${disabled && !checked ? ' disabled' : ''}>
+      ${actualVariant === 'card' ? '<span aria-hidden="true">⚖️</span> ' : ''}${checked ? 'Remover da comparação' : 'Comparar'}
+    </button>`;
+  }
+
+  function compareBar(selected = [], { notice = null } = {}) {
+    if (selected.length === 0 && !notice) return '';
+    const deputies = selected.map(d => `
+      <div class="compare-avatar" title="${escapeHTML(d.nome || '')}">
+        <img src="${escapeHTML(d.urlFoto || API.getFotoURL(d.id))}" alt="Foto de ${escapeHTML(d.nome || '')}" />
+        <span>${escapeHTML((d.nome || '').split(' ')[0])}</span>
+        <button type="button" data-compare-remove="${d.id}" aria-label="Remover ${escapeHTML(d.nome || 'deputado')}">×</button>
+      </div>`).join('');
+    return `<div class="compare-bar" role="region" aria-label="Comparação de deputados">
+      <div class="compare-bar-deputies">${deputies}</div>
+      ${notice ? `<div class="compare-bar-notice" role="status">${escapeHTML(notice)}</div>` : ''}
+      ${selected.length ? `<button type="button" id="compare-clear" class="btn-load-more">Limpar</button>
+      <button type="button" id="compare-open" class="btn-load-more"${selected.length < 2 ? ' disabled' : ''}>Comparar (${selected.length})</button>` : ''}
+    </div>`;
+  }
+
+  function compareValue(block, render) {
+    if (!block || block.status === 'loading') return '<span class="skeleton skeleton-line compare-skeleton"></span>';
+    if (block.status === 'error') return `<span class="compare-error">⚠️ Erro</span><button class="btn-load-more compare-retry" type="button" data-compare-retry="${block.id || ''}">Tentar novamente</button>`;
+    if (block.status === 'empty') return '<span class="compare-empty">Sem dados no período</span>';
+    return render(block.data);
+  }
+
+  function compareRow(label, cells, { better = null, format = value => value } = {}) {
+    const values = cells.map(c => c && typeof c.value === 'number' ? c.value : (typeof c === 'number' ? c : null));
+    const ranks = API.rankValues(values, better);
+    const rendered = cells.map((cell, i) => {
+      const value = cell && Object.prototype.hasOwnProperty.call(cell, 'value') ? cell.value : cell;
+      const text = cell && cell.html ? cell.html : format(value);
+      const rank = ranks[i];
+      const marker = rank === 'best' ? '▲ ' : rank === 'worst' ? '▼ ' : '';
+      return `<div class="compare-cell ${rank ? `compare-${rank}` : ''}">${rank ? `<span class="sr-only">${rank === 'best' ? 'melhor' : 'pior'}</span>` : ''}${marker}${text}</div>`;
+    }).join('');
+    return `<div class="compare-row"><div class="compare-label">${escapeHTML(label)}</div>${rendered}</div>`;
+  }
+
+  function compareBlockCell(summary, section, render) {
+    const block = summary?.[section];
+    if (!block) return '<span class="skeleton skeleton-line compare-skeleton"></span>';
+    if (block.status === 'error') return `<span class="compare-error">⚠️ Erro</span><button class="btn-load-more compare-retry" type="button" data-compare-retry="${summary.id}:${section}">Tentar novamente</button>`;
+    if (block.status === 'loading') return '<span class="skeleton skeleton-line compare-skeleton"></span>';
+    if (block.status === 'empty') return '<span class="compare-empty">Sem dados no período</span>';
+    if (block.status === 'skipped') return '<span class="compare-empty">Aguardando votações</span>';
+    return render(block.data);
+  }
+
+  function compareModal(summaries = {}, ids = [], { window: voteWindow = null, votesStatus = 'idle', votesProgress = null } = {}) {
+    const list = ids.map(id => summaries[id] || { id });
+    const cols = list.length || ids.length || 1;
+    const profileCells = list.map(s => compareBlockCell(s, 'perfil', p => `<div class="compare-deputy">
+      <img src="${escapeHTML(p.foto || API.getFotoURL(s.id))}" alt="Foto de ${escapeHTML(p.nome)}" />
+      <strong>${escapeHTML(p.nome)}</strong><span>${escapeHTML(p.partido || '—')} / ${escapeHTML(p.uf || '—')}</span><small>${escapeHTML(p.situacao || '—')}</small></div>`));
+    const getData = (section, fallback = {}) => list.map(s => s[section]?.data || fallback);
+    const gastos = getData('gastos');
+    const producao = getData('producao');
+    const votacoes = getData('votacoes');
+    const atuacao = getData('atuacao');
+    const currency = value => value === null || value === undefined ? '—' : API.formatCurrency(value);
+    const number = value => value === null || value === undefined ? '—' : Number(value).toLocaleString('pt-BR');
+    const pct = value => value === null || value === undefined ? 'Sem orientação' : `${Number(value).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`;
+    const row = (label, section, values, options = {}) => compareRow(label, list.map((s, i) => ({
+      value: options.numeric && s[section]?.status === 'ok' ? values[i] : null,
+      html: compareBlockCell(s, section, d => options.render ? options.render(d, i) : escapeHTML(String(values[i] ?? '—'))),
+    })), options);
+    const startDate = voteWindow ? API.formatDate(voteWindow.dataInicio) : '—';
+    const endDate = voteWindow ? API.formatDate(voteWindow.dataFim) : '—';
+    const chartDesc = gastos.map((g, i) => `${list[i]?.perfil?.data?.nome || `Deputado ${ids[i]}`}: ${(g.porCategoria || []).slice(0, 3).map(c => `${c.tipo} ${currency(c.valor)}`).join(', ') || 'sem categorias'}`).join(' · ');
+
+    return `<div class="compare-modal-inner" style="--cols:${cols}">
+      <button class="modal-close" id="compare-close-btn" type="button" aria-label="Fechar comparador">✕</button>
+      <div class="compare-header"><div><h2 class="modal-name">Comparador de Deputados</h2><p class="compare-subtitle">Compare indicadores lado a lado</p></div>
+        <div class="compare-actions"><button class="btn-load-more" id="compare-share" type="button">🔗 Compartilhar link</button><button class="btn-load-more" id="compare-copy" type="button">📋 Copiar resumo</button></div></div>
+      <div class="compare-table" role="table">
+        <div class="compare-row compare-profile-row"><div class="compare-label">Deputado</div>${profileCells.map(c => `<div class="compare-cell">${c}</div>`).join('')}</div>
+        <section class="compare-section"><h3 class="compare-section-title">💰 Gastos CEAP (ano corrente)</h3>
+          ${row('Total', 'gastos', gastos.map(g => g.total), { better: 'min', numeric: true, format: currency })}
+          ${row('Média mensal', 'gastos', gastos.map(g => g.mediaMensal), { better: 'min', numeric: true, format: currency })}
+          ${row('Maior categoria', 'gastos', gastos.map(g => g.maiorCategoria), { render: d => d.maiorCategoria ? `${escapeHTML(typeof shortenExpenseType === 'function' ? shortenExpenseType(d.maiorCategoria.tipo) : d.maiorCategoria.tipo)} · ${d.maiorCategoria.pct}%` : '—' })}
+          ${row('Fornecedores distintos', 'gastos', gastos.map(g => g.fornecedores), { render: d => number(d.fornecedores) })}
+        </section>
+        <section class="compare-section"><h3 class="compare-section-title">📋 Produção legislativa (57ª Legislatura)</h3>
+          ${row('Proposições de autoria', 'producao', producao.map(p => p.total), { better: 'max', numeric: true, format: number })}
+          ${row('Por tipo', 'producao', producao, { render: d => (d.porTipo || []).map(t => `${escapeHTML(t.sigla)} ${t.qtd}`).join(' · ') || '—' })}
+        </section>
+        <section class="compare-section"><h3 class="compare-section-title">🗳️ Votações (janela: ${startDate} – ${endDate})</h3>
+          ${votesStatus === 'loading' && votesProgress ? `<p id="compare-votes-progress" class="compare-progress" role="status">${escapeHTML(votesProgress)}</p>` : '<p id="compare-votes-progress" class="compare-progress" role="status"></p>'}
+          ${row('Votos registrados', 'votacoes', votacoes.map(v => v.registrados), { better: 'max', numeric: true, format: number })}
+          ${row('Alinhamento c/ partido', 'votacoes', votacoes.map(v => v.partido), { render: d => d.pct === null ? 'Sem orientação' : `${pct(d.pct)} (${d.seguiu} de ${d.comOrientacao})` })}
+          ${row('Alinhamento c/ Governo', 'votacoes', votacoes.map(v => v.governo), { render: d => d.pct === null ? 'Sem orientação' : `${pct(d.pct)} (${d.seguiu} de ${d.comOrientacao})` })}
+          ${row('Não registrado', 'votacoes', votacoes.map(v => v.pctNaoRegistrado), { better: 'min', numeric: true, format: pct })}
+        </section>
+        <section class="compare-section"><h3 class="compare-section-title">🏛️ Atuação</h3>
+          ${row('Comissões', 'atuacao', atuacao.map(a => a.comissoes), { render: d => number(d.comissoes) })}
+          ${row('Com cargo de direção', 'atuacao', atuacao.map(a => a.comCargo), { render: d => number(d.comCargo) })}
+          ${row('Frentes', 'atuacao', atuacao.map(a => a.frentes), { render: d => number(d.frentes) })}
+          ${row('Trocas de partido', 'atuacao', atuacao.map(a => a.trocasPartido), { render: d => number(d.trocasPartido) })}
+        </section>
+      </div>
+      <div class="compare-chart-wrap"><canvas id="compare-chart" role="img" aria-label="Gastos por categoria comparados"></canvas><p class="sr-only" id="compare-chart-desc">${escapeHTML(chartDesc || 'Sem dados de gastos para gerar o gráfico.')}</p></div>
+      <footer class="compare-footer">Fonte: <a href="https://dadosabertos.camara.leg.br" target="_blank" rel="noopener noreferrer">Dados Abertos da Câmara dos Deputados</a></footer>
+    </div>`;
+  }
+
+  let compareChartInstance = null;
+
+  function destroyCompareChart() {
+    if (compareChartInstance) {
+      compareChartInstance.destroy();
+      compareChartInstance = null;
+    }
+  }
+
+  function renderCompareChart(canvasId, summaries = {}, ids = []) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || typeof Chart === 'undefined') return;
+    destroyCompareChart();
+    const byCategory = new Map();
+    ids.forEach(id => (summaries[id]?.gastos?.data?.porCategoria || []).forEach(c => {
+      const label = shortenExpenseType(c.tipo);
+      if (!byCategory.has(label)) byCategory.set(label, new Map());
+      byCategory.get(label).set(id, c.valor);
+    }));
+    const labels = Array.from(byCategory.entries()).map(([label, vals]) => ({ label, total: Array.from(vals.values()).reduce((a, b) => a + b, 0) })).sort((a, b) => b.total - a.total).slice(0, 5).map(v => v.label);
+    const colors = ['#6366f1', '#10b981', '#f59e0b'];
+    compareChartInstance = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: ids.map((id, i) => ({ label: summaries[id]?.perfil?.data?.nome || `Deputado ${id}`, data: labels.map(label => byCategory.get(label)?.get(id) || 0), backgroundColor: colors[i] })),
+      },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#8b8fa3' } }, tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${API.formatCurrency(ctx.raw)}` } } } },
+    });
+  }
+
+  function compareMarkdown(summaries = {}, ids = [], window = null) {
+    const names = ids.map(id => summaries[id]?.perfil?.data?.nome || `Deputado ${id}`);
+    const rows = [
+      ['Indicador', ...names],
+      ['Total de gastos', ...ids.map(id => API.formatCurrency(summaries[id]?.gastos?.data?.total || 0))],
+      ['Média mensal', ...ids.map(id => API.formatCurrency(summaries[id]?.gastos?.data?.mediaMensal || 0))],
+      ['Proposições de autoria', ...ids.map(id => String(summaries[id]?.producao?.data?.total ?? '—'))],
+      ['Votos registrados', ...ids.map(id => String(summaries[id]?.votacoes?.data?.registrados ?? '—'))],
+      ['Alinhamento c/ partido', ...ids.map(id => summaries[id]?.votacoes?.data?.partido?.pct == null ? 'Sem orientação' : `${summaries[id].votacoes.data.partido.pct}%`)],
+      ['Alinhamento c/ Governo', ...ids.map(id => summaries[id]?.votacoes?.data?.governo?.pct == null ? 'Sem orientação' : `${summaries[id].votacoes.data.governo.pct}%`)],
+      ['Comissões', ...ids.map(id => String(summaries[id]?.atuacao?.data?.comissoes ?? '—'))],
+      ['Frentes', ...ids.map(id => String(summaries[id]?.atuacao?.data?.frentes ?? '—'))],
+    ];
+    const text = rows.map(r => `| ${r.join(' | ')} |`).join('\n');
+    const dates = window ? `\n\nJanela de votações: ${API.formatDate(window.dataInicio)} – ${API.formatDate(window.dataFim)}` : '';
+    return `# Comparador de Deputados — Radar Político\n\n${text}${dates}\n\nFonte: https://dadosabertos.camara.leg.br`;
+  }
+
+  // ==========================================
   // Helpers
   // ==========================================
   function shortenExpenseType(type) {
@@ -1354,5 +1522,12 @@ const Components = (() => {
     renderExpenseChart,
     pagination,
     shortenExpenseType,
+    compareToggle,
+    compareBar,
+    compareModal,
+    compareRow,
+    renderCompareChart,
+    destroyCompareChart,
+    compareMarkdown,
   };
 })();

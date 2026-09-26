@@ -18,8 +18,9 @@ const MIME_TYPES = {
 
 const server = http.createServer((req, res) => {
   // Normalize URL path and prevent directory traversal
-  let filePath = req.url === '/' ? '/index.html' : req.url;
-  filePath = path.join(__dirname, filePath.split('?')[0]);
+  const pathname = req.url.split('?')[0];
+  let filePath = pathname === '/' ? '/index.html' : pathname;
+  filePath = path.join(__dirname, filePath);
 
   // Check if file is outside of project directory
   if (!filePath.startsWith(__dirname)) {

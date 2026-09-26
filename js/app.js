@@ -21,6 +21,17 @@ const App = (() => {
     },
     loading: true,
     modalOpen: false,
+    compare: {
+      selected: [],
+      summaries: {},
+      open: false,
+      loading: {},
+      votes: null,
+      votesStatus: 'idle',
+      votesError: null,
+      votesProgress: null,
+      notice: null,
+    },
     modal: {
       deputyId: null,
       details: null,
@@ -62,6 +73,8 @@ const App = (() => {
   // DOM References
   // ==========================================
   let $grid, $filters, $hero, $modal, $modalOverlay, $pagination;
+  let $compareBar, $compareOverlay, $compareContent;
+  let comparePreviousFocus = null;
 
   // ==========================================
   // Initialize
@@ -89,6 +102,19 @@ const App = (() => {
       // Render deputies
       applyFiltersAndRender();
 
+      const urlIds = parseCompareParam(window.location.search);
+      const rawCompareIds = new URLSearchParams(window.location.search).get('comparar');
+      const rawCompareCount = rawCompareIds ? rawCompareIds.split(',').length : 0;
+      const storedIds = readCompareStorage();
+      const sourceIds = urlIds.length ? urlIds : storedIds;
+      state.compare.selected = sourceIds.filter(id => state.allDeputies.some(d => Number(d.id) === id)).slice(0, COMPARE_MAX);
+      if (rawCompareCount && state.compare.selected.length < Math.min(rawCompareCount, COMPARE_MAX)) {
+        state.compare.notice = 'Alguns deputados do link não foram encontrados e foram ignorados.';
+      }
+      renderCompareBar();
+      refreshCompareToggles();
+      if (urlIds.length >= 2 && state.compare.selected.length >= 2) openCompareModal();
+
       state.loading = false;
     } catch (err) {
       console.error('Failed to initialize:', err);
@@ -108,6 +134,9 @@ const App = (() => {
     $modalOverlay = document.getElementById('modal-overlay');
     $modal = document.getElementById('modal-content');
     $pagination = document.getElementById('pagination-container');
+    $compareBar = document.getElementById('compare-bar');
+    $compareOverlay = document.getElementById('compare-overlay');
+    $compareContent = document.getElementById('compare-content');
   }
 
   function showSkeletons() {
@@ -172,8 +201,12 @@ const App = (() => {
       `;
     } else {
       $grid.innerHTML = state.displayedDeputies.map(d =>
-        Components.deputyCard(d)
+        Components.deputyCard(d, {
+          checked: state.compare.selected.includes(Number(d.id)),
+          disabled: state.compare.selected.length >= COMPARE_MAX && !state.compare.selected.includes(Number(d.id)),
+        })
       ).join('');
+      refreshCompareToggles();
     }
 
     // Render pagination
@@ -271,6 +304,10 @@ const App = (() => {
       ${warningBanner}
       ${Components.deputyModal(details, expensesAll, propositions, expensesVisible, votes, activity, {
         expensesView, supplierFilter, suppliers, failedYears,
+        compare: {
+          checked: state.compare.selected.includes(Number(details.id)),
+          disabled: state.compare.selected.length >= COMPARE_MAX && !state.compare.selected.includes(Number(details.id)),
+        },
       })}
     `;
 
@@ -653,11 +690,217 @@ const App = (() => {
   }
 
   // ==========================================
+  // Comparador de Deputados
+  // ==========================================
+  const COMPARE_MAX = 3;
+  const COMPARE_STORAGE_KEY = 'rp:compare';
+
+  function parseCompareParam(search = '') {
+    const raw = new URLSearchParams(search).get('comparar');
+    if (!raw) return [];
+    return [...new Set(raw.split(',').map(Number).filter(id => Number.isInteger(id) && id > 0))].slice(0, COMPARE_MAX);
+  }
+
+  function serializeCompareParam(ids = []) {
+    return `comparar=${ids.filter(id => Number.isInteger(Number(id)) && Number(id) > 0).slice(0, COMPARE_MAX).join(',')}`;
+  }
+
+  function readCompareStorage() {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(COMPARE_STORAGE_KEY) || '[]');
+      return Array.isArray(parsed) ? [...new Set(parsed.map(Number).filter(id => Number.isInteger(id) && id > 0))].slice(0, COMPARE_MAX) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function writeCompareStorage() {
+    try { sessionStorage.setItem(COMPARE_STORAGE_KEY, JSON.stringify(state.compare.selected)); } catch (e) { /* storage unavailable */ }
+  }
+
+  function selectedDeputies() {
+    return state.compare.selected.map(id => state.allDeputies.find(d => Number(d.id) === Number(id))).filter(Boolean);
+  }
+
+  function renderCompareBar() {
+    if (!$compareBar) return;
+    $compareBar.innerHTML = Components.compareBar(selectedDeputies(), { notice: state.compare.notice });
+  }
+
+  function refreshCompareToggles() {
+    document.querySelectorAll('.compare-toggle').forEach(toggle => {
+      const id = Number(toggle.dataset.deputyId);
+      const checked = state.compare.selected.includes(id);
+      const disabled = state.compare.selected.length >= COMPARE_MAX && !checked;
+      toggle.classList.toggle('is-checked', checked);
+      toggle.setAttribute('aria-pressed', String(checked));
+      toggle.disabled = disabled;
+      const label = disabled ? 'Máximo de 3 deputados' : `${checked ? 'Remover da comparação' : 'Comparar'} ${toggle.closest('.deputy-card, .modal-details')?.querySelector('.deputy-name, .modal-name')?.textContent || 'deputado'}`;
+      toggle.setAttribute('aria-label', label);
+      toggle.title = label;
+      toggle.innerHTML = toggle.classList.contains('compare-toggle--card') ? `<span aria-hidden="true">⚖️</span> ${checked ? 'Remover' : 'Comparar'}` : (checked ? 'Remover da comparação' : 'Adicionar à comparação');
+    });
+  }
+
+  function toggleCompare(id) {
+    id = Number(id);
+    const index = state.compare.selected.indexOf(id);
+    if (index >= 0) state.compare.selected.splice(index, 1);
+    else if (state.compare.selected.length < COMPARE_MAX) state.compare.selected.push(id);
+    else return;
+    writeCompareStorage();
+    renderCompareBar();
+    refreshCompareToggles();
+  }
+
+  function removeFromCompare(id) {
+    state.compare.selected = state.compare.selected.filter(value => value !== Number(id));
+    writeCompareStorage();
+    renderCompareBar();
+    refreshCompareToggles();
+  }
+
+  function clearCompare() {
+    state.compare.selected = [];
+    state.compare.summaries = {};
+    state.compare.notice = null;
+    if (state.compare.open) closeCompareModal();
+    writeCompareStorage();
+    renderCompareBar();
+    refreshCompareToggles();
+  }
+
+  function renderCompareModal() {
+    if (!$compareContent) return;
+    Components.destroyCompareChart();
+    $compareContent.innerHTML = Components.compareModal(state.compare.summaries, state.compare.selected, {
+      window: API.compareVotesWindow(),
+      votesStatus: state.compare.votesStatus,
+      votesProgress: state.compare.votesProgress,
+    });
+    setTimeout(() => Components.renderCompareChart('compare-chart', state.compare.summaries, state.compare.selected), 0);
+  }
+
+  function openCompareModal() {
+    if (state.compare.selected.length < 2 || !$compareOverlay) return;
+    state.compare.notice = null;
+    state.compare.open = true;
+    comparePreviousFocus = document.activeElement;
+    $compareOverlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    history.replaceState(null, '', `${location.pathname}?${serializeCompareParam(state.compare.selected)}`);
+    renderCompareModal();
+    document.getElementById('compare-close-btn')?.focus();
+    loadCompareData();
+  }
+
+  function closeCompareModal() {
+    if (!$compareOverlay) return;
+    state.compare.open = false;
+    $compareOverlay.classList.remove('active');
+    document.body.style.overflow = state.modalOpen ? 'hidden' : '';
+    Components.destroyCompareChart();
+    const url = new URL(location.href);
+    url.searchParams.delete('comparar');
+    history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    if (comparePreviousFocus && typeof comparePreviousFocus.focus === 'function') comparePreviousFocus.focus();
+  }
+
+  async function loadCompareData() {
+    const ids = [...state.compare.selected];
+    const existing = ids.filter(id => !state.compare.summaries[id]);
+    const results = await Promise.allSettled(existing.map(id => API.computeDeputySummary(id, { votos: null })));
+    if (!state.compare.open || ids.join(',') !== state.compare.selected.join(',')) return;
+    results.forEach((result, i) => { if (result.status === 'fulfilled') state.compare.summaries[existing[i]] = result.value; });
+    renderCompareModal();
+    state.compare.votesStatus = 'loading';
+    renderCompareModal();
+    try {
+      const votes = await API.getVotosComparados(ids, API.compareVotesWindow(), (done, total) => {
+        if (!state.compare.open || ids.join(',') !== state.compare.selected.join(',')) return;
+        state.compare.votesProgress = `Analisando ${done} de ${total} votações...`;
+        const progress = document.getElementById('compare-votes-progress');
+        if (progress) progress.textContent = state.compare.votesProgress;
+      });
+      if (!state.compare.open || ids.join(',') !== state.compare.selected.join(',')) return;
+      state.compare.votes = votes;
+      state.compare.votesStatus = 'ok';
+      state.compare.votesError = null;
+      await Promise.all(ids.map(async id => {
+        const summary = state.compare.summaries[id] || { id };
+        summary.votacoes = await API.computeCompareSection(id, 'votacoes', {
+          votos: { totalVotacoes: votes.totalVotacoes, items: votes.porDeputado[id] || [] },
+          partido: summary.perfil?.data?.partido,
+        });
+        state.compare.summaries[id] = summary;
+      }));
+    } catch (err) {
+      state.compare.votesStatus = 'error';
+      state.compare.votesError = err.message;
+    }
+    if (state.compare.open && ids.join(',') === state.compare.selected.join(',')) renderCompareModal();
+  }
+
+  async function retryCompareSection(id, section) {
+    const summary = state.compare.summaries[id] || { id };
+    summary[section] = { status: 'loading', data: null, error: null };
+    state.compare.summaries[id] = summary;
+    renderCompareModal();
+    let votes = state.compare.votes;
+    if (section === 'votacoes' && state.compare.votesStatus === 'error') {
+      try { state.compare.votesStatus = 'loading'; votes = await API.getVotosComparados(state.compare.selected, API.compareVotesWindow()); state.compare.votes = votes; state.compare.votesStatus = 'ok'; } catch (err) { state.compare.votesStatus = 'error'; summary[section] = { status: 'error', data: null, error: err.message }; renderCompareModal(); return; }
+    }
+    summary[section] = await API.computeCompareSection(id, section, { votos: votes && { totalVotacoes: votes.totalVotacoes, items: votes.porDeputado[id] || [] }, partido: summary.perfil?.data?.partido });
+    state.compare.summaries[id] = summary;
+    renderCompareModal();
+  }
+
+  function shareCompareLink() {
+    const link = `${location.origin}${location.pathname}?${serializeCompareParam(state.compare.selected)}`;
+    copyCompareText(link, document.getElementById('compare-share'));
+  }
+
+  function copyCompareSummary() {
+    copyCompareText(Components.compareMarkdown(state.compare.summaries, state.compare.selected, API.compareVotesWindow()), document.getElementById('compare-copy'));
+  }
+
+  async function copyCompareText(text, button) {
+    try { if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text); else throw new Error('clipboard'); }
+    catch (e) { window.prompt('Copie o conteúdo da comparação:', text); return; }
+    if (button) { const original = button.textContent; button.textContent = 'Link copiado!'; setTimeout(() => { button.textContent = original; }, 2000); }
+  }
+
+  function trapCompareFocus(e) {
+    if (e.key !== 'Tab' || !$compareOverlay?.classList.contains('active')) return;
+    const focusable = [...$compareContent.querySelectorAll('button:not([disabled]), a[href], input, [tabindex]:not([tabindex="-1"])')];
+    if (!focusable.length) return;
+    const first = focusable[0]; const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+
+  // ==========================================
   // Event Binding
   // ==========================================
   function bindGlobalEvents() {
     // Delegate click on deputy cards and ranking rows
     document.addEventListener('click', (e) => {
+      const compareToggleButton = e.target.closest('.compare-toggle');
+      if (compareToggleButton) {
+        e.stopPropagation();
+        toggleCompare(compareToggleButton.dataset.deputyId);
+        return;
+      }
+      const removeButton = e.target.closest('[data-compare-remove]');
+      if (removeButton) { removeFromCompare(removeButton.dataset.compareRemove); return; }
+      if (e.target.closest('#compare-clear')) { clearCompare(); return; }
+      if (e.target.closest('#compare-open')) { openCompareModal(); return; }
+      if (e.target.closest('#compare-close-btn') || (e.target === $compareOverlay)) { closeCompareModal(); return; }
+      if (e.target.closest('#compare-share')) { shareCompareLink(); return; }
+      if (e.target.closest('#compare-copy')) { copyCompareSummary(); return; }
+      const retryCompare = e.target.closest('[data-compare-retry]');
+      if (retryCompare) { const [id, section] = retryCompare.dataset.compareRetry.split(':'); retryCompareSection(Number(id), section); return; }
+
       // Deputy card click
       const card = e.target.closest('.deputy-card');
       if (card) {
@@ -761,12 +1004,12 @@ const App = (() => {
 
     // Keyboard: Enter on cards, Escape to close modal
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && state.modalOpen) {
-        closeModal();
-      }
+      if (e.key === 'Escape' && state.compare.open) { closeCompareModal(); return; }
+      if (e.key === 'Escape' && state.modalOpen) closeModal();
+      trapCompareFocus(e);
       if (e.key === 'Enter') {
         const card = e.target.closest('.deputy-card');
-        if (card) {
+        if (card && !e.target.closest('.compare-toggle')) {
           const id = parseInt(card.dataset.deputyId);
           if (id) openDeputyModal(id);
         }
@@ -852,5 +1095,9 @@ const App = (() => {
     bindHeaderSearch();
   });
 
-  return { init, state, loadActivity, retryActivityBlock, renderActivityPanel };
+  return {
+    init, state, loadActivity, retryActivityBlock, renderActivityPanel,
+    parseCompareParam, serializeCompareParam, toggleCompare, clearCompare,
+    openCompareModal, closeCompareModal, retryCompareSection, renderCompareBar,
+  };
 })();
