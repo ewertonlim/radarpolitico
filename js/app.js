@@ -780,7 +780,7 @@ const App = (() => {
           return;
         }
         const supplierRow = e.target.closest('.supplier-row[data-supplier-key]');
-        if (supplierRow) {
+        if (supplierRow && !e.target.closest('a')) {
           e.preventDefault();
           applySupplierFilter(supplierRow.dataset.supplierKey);
         }
