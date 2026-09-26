@@ -1127,6 +1127,394 @@ const API = (() => {
   }
 
   // ==========================================
+  // Comparador de Deputados (RP-008)
+  // ==========================================
+  const COMPARE_VOTES_MONTHS = 6;
+  const PROPS57_TTL = 24 * 60 * 60 * 1000;
+  const compareVotesCache = new Map();
+
+  function props57StorageKey(id) {
+    return `rp_props57_${id}`;
+  }
+
+  function readProps57Storage(id) {
+    try {
+      const raw = localStorage.getItem(props57StorageKey(id));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.ts !== 'number' || Date.now() - parsed.ts >= PROPS57_TTL) return null;
+      return parsed.data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeProps57Storage(id, data) {
+    try {
+      localStorage.setItem(props57StorageKey(id), JSON.stringify({ ts: Date.now(), data }));
+    } catch (e) {
+      console.warn('Failed to save proposições to LocalStorage:', e);
+    }
+  }
+
+  /**
+   * Get ALL propositions authored by a deputy in the legislature (paginated)
+   * @param {number} id
+   * @returns {Promise<Array>}
+   */
+  async function getAllProposicoesLegislatura(id) {
+    const stored = readProps57Storage(id);
+    if (stored) return stored;
+
+    let url = buildURL('/proposicoes', {
+      idDeputadoAutor: id,
+      dataApresentacaoInicio: VOTES_MIN_DATE,
+      itens: 100,
+      pagina: 1,
+      ordem: 'ASC',
+      ordenarPor: 'id',
+    });
+
+    let all = [];
+    while (url) {
+      const page = await fetchJSON(url);
+      all = all.concat(page.dados || []);
+      const next = (page.links || []).find(l => l.rel === 'next');
+      url = next ? next.href : null;
+    }
+
+    writeProps57Storage(id, all);
+    return all;
+  }
+
+  /**
+   * Aggregate deputy expenses for comparison
+   * @param {Array} expenses
+   * @param {number} ano
+   * @param {Date} [now]
+   * @returns {Object}
+   */
+  function summarizeGastos(expenses, ano, now = new Date()) {
+    const items = Array.isArray(expenses) ? expenses : [];
+    const total = items.reduce((sum, e) => sum + (parseFloat(e.valorLiquido) || 0), 0);
+    const mesesConsiderados = ano === now.getFullYear() ? now.getMonth() + 1 : 12;
+    const mediaMensal = total / mesesConsiderados;
+
+    const byCat = new Map();
+    items.forEach(e => {
+      const tipo = e.tipoDespesa || 'Outros';
+      byCat.set(tipo, (byCat.get(tipo) || 0) + (parseFloat(e.valorLiquido) || 0));
+    });
+    const porCategoria = Array.from(byCat.entries())
+      .map(([tipo, valor]) => ({ tipo, valor }))
+      .sort((a, b) => b.valor - a.valor);
+
+    const maiorCategoria = porCategoria.length > 0 && total > 0
+      ? {
+          tipo: porCategoria[0].tipo,
+          valor: porCategoria[0].valor,
+          pct: Math.round((porCategoria[0].valor / total) * 1000) / 10,
+        }
+      : null;
+
+    const fornecedores = new Set(
+      items.map(e => e.cnpjCpfFornecedor).filter(c => c !== undefined && c !== null && String(c).trim() !== '')
+    ).size;
+
+    return { total, mediaMensal, mesesConsiderados, maiorCategoria, fornecedores, porCategoria };
+  }
+
+  /**
+   * Aggregate authored propositions
+   * @param {Array} props
+   * @returns {{total: number, porTipo: Array<{sigla, qtd}>}}
+   */
+  function summarizeProducao(props) {
+    const items = Array.isArray(props) ? props : [];
+    const byTipo = new Map();
+    items.forEach(p => {
+      const sigla = p.siglaTipo || '—';
+      byTipo.set(sigla, (byTipo.get(sigla) || 0) + 1);
+    });
+    const porTipo = Array.from(byTipo.entries())
+      .map(([sigla, qtd]) => ({ sigla, qtd }))
+      .sort((a, b) => (b.qtd - a.qtd) || a.sigla.localeCompare(b.sigla));
+    return { total: items.length, porTipo };
+  }
+
+  /**
+   * Aggregate a deputy's votes vs party/government orientations
+   * @param {Array|number} votacoesJanela - ids (or count) of nominal votações in the window
+   * @param {Array<{idVotacao, voto, orientacoes}>} votosDoDeputado
+   * @param {string} siglaPartido
+   * @returns {Object}
+   */
+  function summarizeVotacoes(votacoesJanela, votosDoDeputado, siglaPartido) {
+    const totalVotacoes = Array.isArray(votacoesJanela) ? votacoesJanela.length : (Number(votacoesJanela) || 0);
+    const items = Array.isArray(votosDoDeputado) ? votosDoDeputado : [];
+    const registrados = items.length;
+    const pctNaoRegistrado = totalVotacoes > 0
+      ? Math.round((1 - registrados / totalVotacoes) * 1000) / 10
+      : null;
+
+    const count = (getter) => {
+      let seguiu = 0;
+      let divergiu = 0;
+      items.forEach(item => {
+        const a = classificarAlinhamento(item.voto, getter(item.orientacoes));
+        if (a === 'seguiu') seguiu++;
+        else if (a === 'divergiu') divergiu++;
+      });
+      const comOrientacao = seguiu + divergiu;
+      return {
+        seguiu,
+        divergiu,
+        comOrientacao,
+        pct: comOrientacao > 0 ? Math.round((seguiu / comOrientacao) * 1000) / 10 : null,
+      };
+    };
+
+    const partido = count(o => findOrientacaoPartido(o, siglaPartido));
+    const governo = count(findOrientacaoGoverno);
+    const semOrientacao = items.filter(item =>
+      classificarAlinhamento(item.voto, findOrientacaoPartido(item.orientacoes, siglaPartido)) === null
+      && classificarAlinhamento(item.voto, findOrientacaoGoverno(item.orientacoes)) === null
+    ).length;
+
+    return { registrados, totalVotacoes, pctNaoRegistrado, partido, governo, semOrientacao };
+  }
+
+  /**
+   * Aggregate atuação (comissões, frentes, histórico)
+   * @returns {{comissoes, comCargo, frentes, trocasPartido}}
+   */
+  function summarizeAtuacao(orgaosConsolidados, frentes57, timeline) {
+    const orgaos = Array.isArray(orgaosConsolidados) ? orgaosConsolidados : [];
+    const frentes = Array.isArray(frentes57) ? frentes57 : [];
+    return {
+      comissoes: orgaos.length,
+      comCargo: orgaos.filter(o => o.peso >= 3).length,
+      frentes: frentes.length,
+      trocasPartido: countPartyChanges(timeline || []),
+    };
+  }
+
+  /**
+   * Rank numeric values marking best/worst (ties suppress that mark)
+   * @param {Array<number|null>} values
+   * @param {'min'|'max'|null} better
+   * @returns {Array<'best'|'worst'|null>}
+   */
+  function rankValues(values, better) {
+    const result = values.map(() => null);
+    if (!better) return result;
+    const numeric = values.filter(v => typeof v === 'number' && !Number.isNaN(v));
+    if (numeric.length < 2) return result;
+
+    const bestVal = better === 'min' ? Math.min(...numeric) : Math.max(...numeric);
+    const worstVal = better === 'min' ? Math.max(...numeric) : Math.min(...numeric);
+    const bestCount = numeric.filter(v => v === bestVal).length;
+    const worstCount = numeric.filter(v => v === worstVal).length;
+
+    values.forEach((v, i) => {
+      if (typeof v !== 'number' || Number.isNaN(v)) return;
+      if (v === bestVal && bestCount === 1) result[i] = 'best';
+      else if (v === worstVal && worstCount === 1) result[i] = 'worst';
+    });
+    return result;
+  }
+
+  /**
+   * Fixed comparison window: last COMPARE_VOTES_MONTHS months
+   * @param {Date} [now]
+   * @returns {{dataInicio: string, dataFim: string}}
+   */
+  function compareVotesWindow(now = new Date()) {
+    const start = new Date(now.getFullYear(), now.getMonth() - (COMPARE_VOTES_MONTHS - 1), 1);
+    const dataInicio = `${start.getFullYear()}-${pad2(start.getMonth() + 1)}-01`;
+    const dataFim = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+    return { dataInicio, dataFim };
+  }
+
+  /**
+   * Shared pass: nominal votações in the window + votes of each compared deputy
+   * @param {Array<number>} ids
+   * @param {{dataInicio: string, dataFim: string}} window
+   * @param {Function} [onProgress] - (done, total) per votação analyzed
+   * @returns {Promise<{totalVotacoes: number, porDeputado: Object}>}
+   */
+  async function getVotosComparados(ids, { dataInicio, dataFim }, onProgress) {
+    const cacheKey = `${[...ids].sort((a, b) => a - b).join(',')}|${dataInicio}|${dataFim}`;
+    if (compareVotesCache.has(cacheKey)) return compareVotesCache.get(cacheKey);
+
+    const byId = new Map();
+    let cursor = dataFim;
+    while (true) {
+      const w = voteMonthWindow(cursor);
+      const inicio = w.dataInicio < dataInicio ? dataInicio : w.dataInicio;
+      const fim = w.dataFim > dataFim ? dataFim : w.dataFim;
+      const votacoes = await getVotacoesPlenario(inicio, fim);
+      votacoes.forEach(v => { if (!byId.has(v.id)) byId.set(v.id, v); });
+      if (w.dataInicio <= dataInicio) break;
+      cursor = previousMonth(w.dataInicio);
+    }
+    const votacoes = Array.from(byId.values());
+    const total = votacoes.length;
+    let done = 0;
+
+    const porDeputado = {};
+    ids.forEach(id => { porDeputado[id] = []; });
+
+    let nominais = 0;
+    await Promise.all(votacoes.map(async (votacao) => {
+      const votos = await getVotosVotacao(votacao.id);
+      done++;
+      if (onProgress) onProgress(done, total);
+      if (!Array.isArray(votos) || votos.length === 0) return;
+
+      const encontrados = ids
+        .map(id => ({ id, reg: votos.find(v => Number(v.deputado_?.id) === Number(id)) }))
+        .filter(e => e.reg);
+      if (encontrados.length === 0) {
+        nominais++;
+        return;
+      }
+
+      nominais++;
+      let orientacoes = [];
+      try {
+        orientacoes = await getOrientacoesVotacao(votacao.id);
+      } catch (e) {
+        orientacoes = [];
+      }
+      encontrados.forEach(({ id, reg }) => {
+        porDeputado[id].push({ idVotacao: votacao.id, voto: reg.tipoVoto, orientacoes });
+      });
+    }));
+
+    const result = { totalVotacoes: nominais, porDeputado };
+    compareVotesCache.set(cacheKey, result);
+    return result;
+  }
+
+  function blockOk(data, isEmpty) {
+    return { status: isEmpty ? 'empty' : 'ok', data, error: null };
+  }
+
+  function blockError(err) {
+    return { status: 'error', data: null, error: (err && err.message) || 'Erro desconhecido' };
+  }
+
+  function summaryPerfil(details, id) {
+    const ultimo = details?.ultimoStatus || {};
+    return {
+      id,
+      nome: ultimo.nomeEleitoral || details?.nome || '—',
+      partido: ultimo.siglaPartido || details?.siglaPartido || null,
+      uf: ultimo.siglaUf || details?.siglaUf || null,
+      situacao: ultimo.situacao || null,
+      foto: ultimo.urlFoto || getFotoURL(id),
+    };
+  }
+
+  async function fetchAtuacaoData(id) {
+    const [orgaos, frentes, historico] = await Promise.all([
+      getDeputadoOrgaos(id),
+      getDeputadoFrentes(id),
+      getDeputadoHistorico(id),
+    ]);
+    return summarizeAtuacao(
+      consolidateOrgaos(orgaos),
+      filterFrentes57(frentes),
+      buildHistoricoTimeline(historico)
+    );
+  }
+
+  function isAtuacaoEmpty(data) {
+    return !data || (data.comissoes === 0 && data.frentes === 0 && data.trocasPartido === 0);
+  }
+
+  /**
+   * Compute all comparison blocks for one deputy, tolerating partial failures
+   * @param {number} id
+   * @param {Object} [options]
+   * @param {number} [options.ano]
+   * @param {Object|null} [options.votos] - { totalVotacoes, items } | null skips the block
+   * @returns {Promise<{id, perfil, gastos, producao, votacoes, atuacao}>}
+   */
+  async function computeDeputySummary(id, { ano = new Date().getFullYear(), votos = null } = {}) {
+    const [perfil, gastos, producao, atuacao] = await Promise.allSettled([
+      getDeputadoDetalhes(id),
+      getAllDespesas(id, ano),
+      getAllProposicoesLegislatura(id),
+      fetchAtuacaoData(id),
+    ]);
+
+    const perfilData = perfil.status === 'fulfilled' ? summaryPerfil(perfil.value, id) : null;
+
+    let votacoes;
+    if (!votos) {
+      votacoes = { status: 'skipped', data: null, error: null };
+    } else {
+      const data = summarizeVotacoes(votos.totalVotacoes, votos.items, perfilData?.partido || null);
+      votacoes = blockOk(data, data.registrados === 0);
+    }
+
+    return {
+      id,
+      perfil: perfil.status === 'fulfilled'
+        ? blockOk(perfilData, false)
+        : blockError(perfil.reason),
+      gastos: gastos.status === 'fulfilled'
+        ? blockOk(summarizeGastos(gastos.value, ano), gastos.value.length === 0)
+        : blockError(gastos.reason),
+      producao: producao.status === 'fulfilled'
+        ? blockOk(summarizeProducao(producao.value), producao.value.length === 0)
+        : blockError(producao.reason),
+      votacoes,
+      atuacao: atuacao.status === 'fulfilled'
+        ? blockOk(atuacao.value, isAtuacaoEmpty(atuacao.value))
+        : blockError(atuacao.reason),
+    };
+  }
+
+  /**
+   * Recompute a single comparison block (for "Tentar novamente")
+   * @param {number} id
+   * @param {'perfil'|'gastos'|'producao'|'votacoes'|'atuacao'} section
+   * @param {Object} ctx - { ano, votos, partido }
+   * @returns {Promise<{status, data, error}>} block-shaped result
+   */
+  async function computeCompareSection(id, section, ctx = {}) {
+    const ano = ctx.ano || new Date().getFullYear();
+    try {
+      if (section === 'perfil') {
+        return blockOk(summaryPerfil(await getDeputadoDetalhes(id), id), false);
+      }
+      if (section === 'gastos') {
+        const expenses = await getAllDespesas(id, ano);
+        return blockOk(summarizeGastos(expenses, ano), expenses.length === 0);
+      }
+      if (section === 'producao') {
+        const props = await getAllProposicoesLegislatura(id);
+        return blockOk(summarizeProducao(props), props.length === 0);
+      }
+      if (section === 'atuacao') {
+        const data = await fetchAtuacaoData(id);
+        return blockOk(data, isAtuacaoEmpty(data));
+      }
+      if (section === 'votacoes') {
+        if (!ctx.votos) return { status: 'skipped', data: null, error: null };
+        const data = summarizeVotacoes(ctx.votos.totalVotacoes, ctx.votos.items, ctx.partido || null);
+        return blockOk(data, data.registrados === 0);
+      }
+      return blockError(new Error(`Seção desconhecida: ${section}`));
+    } catch (err) {
+      return blockError(err);
+    }
+  }
+
+  // ==========================================
   // Utility Functions
   // ==========================================
 
@@ -1261,6 +1649,17 @@ const API = (() => {
     findOrientacaoPartido,
     findOrientacaoGoverno,
     classificarAlinhamento,
+    getAllProposicoesLegislatura,
+    summarizeGastos,
+    summarizeProducao,
+    summarizeVotacoes,
+    summarizeAtuacao,
+    rankValues,
+    compareVotesWindow,
+    getVotosComparados,
+    computeDeputySummary,
+    computeCompareSection,
+    COMPARE_VOTES_MONTHS,
     getVotosDeputadoPeriodo,
     voteMonthWindow,
     previousMonth,
