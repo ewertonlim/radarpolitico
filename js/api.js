@@ -853,6 +853,246 @@ const API = (() => {
     return items;
   }
 
+  // ==========================================
+  // Atuação parlamentar (comissões, frentes, histórico)
+  // ==========================================
+  const ACTIVITY_TTL = 24 * 60 * 60 * 1000;
+
+  function readActivityStorage(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.ts !== 'number' || Date.now() - parsed.ts >= ACTIVITY_TTL) return null;
+      return parsed.data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeActivityStorage(key, data) {
+    try {
+      localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data }));
+    } catch (e) {
+      console.warn('Failed to save activity to LocalStorage:', e);
+    }
+  }
+
+  /**
+   * Get deputy's comissões/órgãos memberships in the legislature (all pages)
+   * @param {number} id - Deputy ID
+   * @returns {Promise<Array>} raw dados
+   */
+  async function getDeputadoOrgaos(id) {
+    const storageKey = `rp_orgaos_${id}`;
+    const stored = readActivityStorage(storageKey);
+    if (stored) return stored;
+
+    let url = buildURL(`/deputados/${id}/orgaos`, {
+      dataInicio: '2023-02-01',
+      itens: 100,
+      ordem: 'DESC',
+      ordenarPor: 'dataInicio',
+    });
+
+    let all = [];
+    while (url) {
+      const page = await fetchJSON(url);
+      all = all.concat(page.dados || []);
+      const next = (page.links || []).find(l => l.rel === 'next');
+      url = next ? next.href : null;
+    }
+
+    writeActivityStorage(storageKey, all);
+    return all;
+  }
+
+  /**
+   * Get deputy's frentes parlamentares (all legislatures — filter client-side)
+   * @param {number} id - Deputy ID
+   * @returns {Promise<Array>}
+   */
+  async function getDeputadoFrentes(id) {
+    const storageKey = `rp_frentes_${id}`;
+    const stored = readActivityStorage(storageKey);
+    if (stored) return stored;
+
+    const response = await fetchJSON(buildURL(`/deputados/${id}/frentes`));
+    const dados = response.dados || [];
+    writeActivityStorage(storageKey, dados);
+    return dados;
+  }
+
+  /**
+   * Get deputy's mandate history (party/status events)
+   * @param {number} id - Deputy ID
+   * @returns {Promise<Array>}
+   */
+  async function getDeputadoHistorico(id) {
+    const storageKey = `rp_historico_${id}`;
+    const stored = readActivityStorage(storageKey);
+    if (stored) return stored;
+
+    const response = await fetchJSON(buildURL(`/deputados/${id}/historico`));
+    const dados = response.dados || [];
+    writeActivityStorage(storageKey, dados);
+    return dados;
+  }
+
+  /**
+   * Rank a cargo in a comissão/órgão: Presidente > Vice > Titular > Suplente
+   * @param {string|number} codTitulo
+   * @param {string} titulo
+   * @returns {number}
+   */
+  function rankCargo(codTitulo, titulo) {
+    const text = String(titulo || '');
+    if (String(codTitulo) === '102') return 1;
+    if (/presidente/i.test(text) && !/vice/i.test(text)) return 4;
+    if (/vice/i.test(text)) return 3;
+    if (/titular/i.test(text)) return 2;
+    if (/suplente/i.test(text)) return 1;
+    return 0;
+  }
+
+  /**
+   * Deduplicate orgaos records by idOrgao, keeping the highest-weight cargo
+   * @param {Array} dados - raw records from /deputados/{id}/orgaos
+   * @returns {Array<{idOrgao,sigla,nome,cargo,codTitulo,peso,inicio,fim,emExercicio}>}
+   */
+  function consolidateOrgaos(dados = []) {
+    const today = new Date().toISOString().slice(0, 10);
+    const byOrgao = new Map();
+
+    dados.forEach(item => {
+      const idOrgao = item.idOrgao;
+      if (idOrgao === undefined || idOrgao === null) return;
+      const peso = rankCargo(item.codTitulo, item.titulo);
+      const existing = byOrgao.get(idOrgao);
+
+      if (!existing) {
+        byOrgao.set(idOrgao, {
+          idOrgao,
+          sigla: item.siglaOrgao,
+          nome: item.nomeOrgao,
+          cargo: item.titulo,
+          codTitulo: item.codTitulo,
+          peso,
+          inicio: item.dataInicio || null,
+          fim: item.dataFim || null,
+          hasOpenPeriod: !item.dataFim,
+        });
+        return;
+      }
+
+      if (peso > existing.peso) {
+        existing.peso = peso;
+        existing.cargo = item.titulo;
+        existing.codTitulo = item.codTitulo;
+      }
+      if (item.dataInicio && (!existing.inicio || item.dataInicio < existing.inicio)) {
+        existing.inicio = item.dataInicio;
+      }
+      if (!item.dataFim) {
+        existing.hasOpenPeriod = true;
+        existing.fim = null;
+      } else if (!existing.hasOpenPeriod && (!existing.fim || item.dataFim > existing.fim)) {
+        existing.fim = item.dataFim;
+      }
+    });
+
+    return Array.from(byOrgao.values())
+      .map(({ hasOpenPeriod, ...o }) => ({
+        ...o,
+        emExercicio: o.fim === null || o.fim > today,
+      }))
+      .sort((a, b) => {
+        if (b.peso !== a.peso) return b.peso - a.peso;
+        return String(b.inicio || '').localeCompare(String(a.inicio || ''));
+      });
+  }
+
+  /**
+   * Keep only frentes of the current legislature
+   * @param {Array} dados
+   * @returns {Array}
+   */
+  function filterFrentes57(dados = []) {
+    return dados.filter(f => Number(f.idLegislatura) === LEGISLATURE);
+  }
+
+  /**
+   * Build a timeline of party/mandate events for the current legislature
+   * @param {Array} dados - raw records from /deputados/{id}/historico
+   * @returns {Array<{data,tipo,de,para,descricao}>}
+   */
+  function buildHistoricoTimeline(dados = []) {
+    const eventos = dados
+      .filter(e => Number(e.idLegislatura) === LEGISLATURE)
+      .sort((a, b) => String(a.dataHora || '').localeCompare(String(b.dataHora || '')));
+
+    const timeline = [];
+    let lastPartido = null;
+    let lastSituacao = null;
+    let lastStatus = null;
+
+    eventos.forEach((e, index) => {
+      const partido = e.siglaPartido;
+      const situacao = e.situacao;
+      const status = e.descricaoStatus;
+
+      if (index === 0) {
+        timeline.push({
+          data: e.dataHora,
+          tipo: 'posse',
+          de: null,
+          para: partido,
+          descricao: `Início na 57ª Legislatura — ${partido}`,
+        });
+      } else {
+        if (partido !== lastPartido) {
+          timeline.push({
+            data: e.dataHora,
+            tipo: 'troca_partido',
+            de: lastPartido,
+            para: partido,
+            descricao: `Trocou de partido: ${lastPartido} → ${partido}`,
+          });
+        }
+        if (situacao !== lastSituacao || status !== lastStatus) {
+          const text = `${situacao || ''} ${status || ''}`;
+          let tipo = 'outro';
+          if (/licen/i.test(text)) tipo = 'licenca';
+          else if (/afast/i.test(text)) tipo = 'afastamento';
+          else if (/renunc/i.test(text)) tipo = 'renuncia';
+          else if (/exerc|retorn|reassum/i.test(text)) tipo = 'retorno';
+          timeline.push({
+            data: e.dataHora,
+            tipo,
+            de: null,
+            para: null,
+            descricao: status || situacao || '—',
+          });
+        }
+      }
+
+      lastPartido = partido;
+      lastSituacao = situacao;
+      lastStatus = status;
+    });
+
+    return timeline;
+  }
+
+  /**
+   * Count party changes in a historico timeline
+   * @param {Array} timeline
+   * @returns {number}
+   */
+  function countPartyChanges(timeline = []) {
+    return timeline.filter(e => e.tipo === 'troca_partido').length;
+  }
+
   /**
    * Get expense type reference data
    * @returns {Promise<Array>}
@@ -955,6 +1195,15 @@ const API = (() => {
     voteMonthWindow,
     previousMonth,
     VOTES_MIN_DATE,
+    getDeputadoOrgaos,
+    getDeputadoFrentes,
+    getDeputadoHistorico,
+    rankCargo,
+    consolidateOrgaos,
+    filterFrentes57,
+    buildHistoricoTimeline,
+    countPartyChanges,
+    ACTIVITY_TTL,
     getTiposDespesa,
     getPartidos,
     getFotoURL,
