@@ -939,6 +939,250 @@ const API = (() => {
     return dados;
   }
 
+  const presencaSessoesCache = new Map();
+  const presencaEventosCache = new Map();
+  const presencaCache = new Map();
+
+  function readTTLStorage(key, ttl) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.ts !== 'number' || Date.now() - parsed.ts >= ttl) return null;
+      return parsed.data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeTTLStorage(key, data) {
+    try {
+      localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data }));
+    } catch (e) {
+      console.warn('Failed to save attendance to LocalStorage:', e);
+    }
+  }
+
+  function getCachedTTL(cacheMap, cacheKey, storageKey, ttl) {
+    const entry = cacheMap.get(cacheKey);
+    if (entry && Date.now() - entry.ts < ttl) return entry.data;
+    cacheMap.delete(cacheKey);
+
+    const stored = readTTLStorage(storageKey, ttl);
+    if (stored !== null) {
+      cacheMap.set(cacheKey, { ts: Date.now(), data: stored });
+      return stored;
+    }
+    return null;
+  }
+
+  function setCachedTTL(cacheMap, cacheKey, storageKey, data) {
+    cacheMap.set(cacheKey, { ts: Date.now(), data });
+    writeTTLStorage(storageKey, data);
+  }
+
+  function attendanceDateRange(ano) {
+    return {
+      dataInicio: Number(ano) === 2023 ? '2023-02-01' : `${ano}-01-01`,
+      dataFim: `${ano}-12-31`,
+    };
+  }
+
+  async function getSessoesDeliberativasPlenario(ano) {
+    const year = Number(ano);
+    const cacheKey = String(year);
+    const storageKey = `rp_plen_sessoes_${year}`;
+    const ttl = despesasTTL(year);
+    const cached = getCachedTTL(presencaSessoesCache, cacheKey, storageKey, ttl);
+    if (cached) return cached;
+
+    const range = attendanceDateRange(year);
+    let url = buildURL('/eventos', {
+      idOrgao: 180,
+      codTipoEvento: 110,
+      dataInicio: range.dataInicio,
+      dataFim: range.dataFim,
+      itens: 100,
+    });
+    const unique = new Map();
+    while (url) {
+      const page = await fetchJSON(url);
+      (page.dados || []).forEach(evento => {
+        if (evento.id !== undefined && evento.id !== null && !unique.has(evento.id)) {
+          unique.set(evento.id, evento);
+        }
+      });
+      const next = (page.links || []).find(link => link.rel === 'next');
+      url = next ? next.href : null;
+    }
+
+    const sessoes = [...unique.values()]
+      .filter(evento => evento.situacao === 'Encerrada' && evento.descricaoTipo === 'Sessão Deliberativa')
+      .map(evento => ({
+        id: evento.id,
+        dataHoraInicio: evento.dataHoraInicio,
+        descricao: evento.descricao,
+        situacao: evento.situacao,
+      }))
+      .sort((a, b) => String(a.dataHoraInicio || '').localeCompare(String(b.dataHoraInicio || '')));
+    setCachedTTL(presencaSessoesCache, cacheKey, storageKey, sessoes);
+    return sessoes;
+  }
+
+  async function getEventosDeputado(id, ano) {
+    const year = Number(ano);
+    const cacheKey = `${id}_${year}`;
+    const storageKey = `rp_dep_eventos_${id}_${year}`;
+    const ttl = despesasTTL(year);
+    const cached = getCachedTTL(presencaEventosCache, cacheKey, storageKey, ttl);
+    if (cached) return cached;
+
+    const range = attendanceDateRange(year);
+    let url = buildURL(`/deputados/${id}/eventos`, {
+      dataInicio: range.dataInicio,
+      dataFim: range.dataFim,
+      itens: 100,
+    });
+    const unique = new Map();
+    while (url) {
+      const page = await fetchJSON(url);
+      (page.dados || []).forEach(evento => {
+        if (evento.id !== undefined && evento.id !== null && !unique.has(evento.id)) {
+          unique.set(evento.id, {
+            id: evento.id,
+            dataHoraInicio: evento.dataHoraInicio,
+          });
+        }
+      });
+      const next = (page.links || []).find(link => link.rel === 'next');
+      url = next ? next.href : null;
+    }
+
+    const eventos = [...unique.values()];
+    setCachedTTL(presencaEventosCache, cacheKey, storageKey, eventos);
+    return eventos;
+  }
+
+  function getPeriodosEmExercicio(historico, ano) {
+    const year = Number(ano);
+    const yearStart = year === 2023 ? '2023-02-01' : `${year}-01-01`;
+    const yearEnd = `${year}-12-31`;
+    const records = (historico || [])
+      .filter(item => Number(item.idLegislatura) === 57)
+      .sort((a, b) => String(a.dataHora || '').localeCompare(String(b.dataHora || '')));
+    if (!records.length) return [{ inicio: yearStart, fim: yearEnd }];
+
+    const periods = [];
+    let situacao = null;
+    let inicio = null;
+    records.forEach(record => {
+      if (!record.dataHora) return;
+      const data = String(record.dataHora).slice(0, 10);
+      if (record.situacao !== null && record.situacao !== undefined) situacao = record.situacao;
+      if (situacao === 'Exercício' && inicio === null) {
+        inicio = data;
+      } else if (situacao !== 'Exercício' && inicio !== null) {
+        periods.push({ inicio, fim: data });
+        inicio = null;
+      }
+    });
+    if (inicio !== null) periods.push({ inicio, fim: yearEnd });
+
+    return periods
+      .map(period => ({
+        inicio: period.inicio < yearStart ? yearStart : period.inicio,
+        fim: period.fim > yearEnd ? yearEnd : period.fim,
+      }))
+      .filter(period => period.inicio <= yearEnd && period.fim >= yearStart && period.inicio <= period.fim);
+  }
+
+  function calcularPresencaPlenario(sessoes, idsEventosDeputado, periodos) {
+    const ids = new Set((idsEventosDeputado || []).map(item => String(
+      item && typeof item === 'object' ? item.id : item
+    )));
+    const periods = periodos || [];
+    const inPeriod = session => {
+      const date = String(session.dataHoraInicio || '').slice(0, 10);
+      return periods.some(period => date >= period.inicio && date <= period.fim);
+    };
+    const consideradas = (sessoes || []).filter(inPeriod);
+    const ausencias = consideradas
+      .filter(session => !ids.has(String(session.id)))
+      .sort((a, b) => String(b.dataHoraInicio || '').localeCompare(String(a.dataHoraInicio || '')));
+    const porMes = {};
+    consideradas.forEach(session => {
+      const month = String(session.dataHoraInicio || '').slice(0, 7);
+      if (!porMes[month]) porMes[month] = { presentes: 0, total: 0 };
+      porMes[month].total++;
+      if (ids.has(String(session.id))) porMes[month].presentes++;
+    });
+    const total = consideradas.length;
+    const presentes = total - ausencias.length;
+    const year = Number(String(periods[0]?.inicio || sessoes?.[0]?.dataHoraInicio || '').slice(0, 4));
+    const yearStart = year === 2023 ? '2023-02-01' : `${year}-01-01`;
+    const yearEnd = `${year}-12-31`;
+
+    return {
+      presentes,
+      total,
+      ausencias,
+      porMes,
+      taxa: total ? (presentes / total) * 100 : null,
+      ajustado: !year || !periods.some(period => period.inicio <= yearStart && period.fim >= yearEnd),
+      periodos: periods,
+    };
+  }
+
+  async function getPresencaPlenario(id, ano) {
+    const year = Number(ano);
+    const cacheKey = `${id}_${year}`;
+    const cached = presencaCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < despesasTTL(year)) {
+      return cached.promise || cached.data;
+    }
+    presencaCache.delete(cacheKey);
+
+    const promise = Promise.all([
+      getSessoesDeliberativasPlenario(year),
+      getEventosDeputado(id, year),
+      getDeputadoHistorico(id),
+    ]).then(([sessoes, eventos, historico]) => calcularPresencaPlenario(
+      sessoes,
+      eventos,
+      getPeriodosEmExercicio(historico, year)
+    ));
+    presencaCache.set(cacheKey, { ts: Date.now(), promise, data: null });
+    try {
+      const data = await promise;
+      presencaCache.set(cacheKey, { ts: Date.now(), data, promise: null });
+      return data;
+    } catch (err) {
+      presencaCache.delete(cacheKey);
+      throw err;
+    }
+  }
+
+  async function getMediaPresenca(ids, ano, onProgress) {
+    const deputyIds = ids || [];
+    let done = 0;
+    const results = await Promise.all(deputyIds.map(async id => {
+      try {
+        return await getPresencaPlenario(id, ano);
+      } catch (e) {
+        return null;
+      } finally {
+        done++;
+        if (onProgress) onProgress(done, deputyIds.length);
+      }
+    }));
+    const taxas = results.filter(result => result && result.taxa !== null).map(result => result.taxa);
+    return {
+      media: taxas.length ? taxas.reduce((sum, taxa) => sum + taxa, 0) / taxas.length : null,
+      calculados: taxas.length,
+      total: deputyIds.length,
+    };
+  }
+
   /**
    * Rank a cargo in a comissão/órgão: Presidente > Vice > Titular > Suplente
    * @param {string|number} codTitulo
@@ -1440,14 +1684,15 @@ const API = (() => {
    * @param {Object} [options]
    * @param {number} [options.ano]
    * @param {Object|null} [options.votos] - { totalVotacoes, items } | null skips the block
-   * @returns {Promise<{id, perfil, gastos, producao, votacoes, atuacao}>}
+   * @returns {Promise<{id, perfil, gastos, producao, votacoes, atuacao, presenca}>}
    */
   async function computeDeputySummary(id, { ano = new Date().getFullYear(), votos = null } = {}) {
-    const [perfil, gastos, producao, atuacao] = await Promise.allSettled([
+    const [perfil, gastos, producao, atuacao, presenca] = await Promise.allSettled([
       getDeputadoDetalhes(id),
       getAllDespesas(id, ano),
       getAllProposicoesLegislatura(id),
       fetchAtuacaoData(id),
+      getPresencaPlenario(id, ano),
     ]);
 
     const perfilData = perfil.status === 'fulfilled' ? summaryPerfil(perfil.value, id) : null;
@@ -1475,13 +1720,16 @@ const API = (() => {
       atuacao: atuacao.status === 'fulfilled'
         ? blockOk(atuacao.value, isAtuacaoEmpty(atuacao.value))
         : blockError(atuacao.reason),
+      presenca: presenca.status === 'fulfilled'
+        ? blockOk(presenca.value, presenca.value.taxa === null)
+        : blockError(presenca.reason),
     };
   }
 
   /**
    * Recompute a single comparison block (for "Tentar novamente")
    * @param {number} id
-   * @param {'perfil'|'gastos'|'producao'|'votacoes'|'atuacao'} section
+   * @param {'perfil'|'gastos'|'producao'|'votacoes'|'atuacao'|'presenca'} section
    * @param {Object} ctx - { ano, votos, partido }
    * @returns {Promise<{status, data, error}>} block-shaped result
    */
@@ -1502,6 +1750,10 @@ const API = (() => {
       if (section === 'atuacao') {
         const data = await fetchAtuacaoData(id);
         return blockOk(data, isAtuacaoEmpty(data));
+      }
+      if (section === 'presenca') {
+        const data = await getPresencaPlenario(id, ano);
+        return blockOk(data, data.taxa === null);
       }
       if (section === 'votacoes') {
         if (!ctx.votos) return { status: 'skipped', data: null, error: null };
@@ -1667,6 +1919,14 @@ const API = (() => {
     getDeputadoOrgaos,
     getDeputadoFrentes,
     getDeputadoHistorico,
+    readTTLStorage,
+    writeTTLStorage,
+    getSessoesDeliberativasPlenario,
+    getEventosDeputado,
+    getPeriodosEmExercicio,
+    calcularPresencaPlenario,
+    getPresencaPlenario,
+    getMediaPresenca,
     rankCargo,
     consolidateOrgaos,
     filterFrentes57,

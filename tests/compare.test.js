@@ -99,6 +99,29 @@ describe('API window and Components comparison', () => {
     expect(modal).toContain('R$');
     expect(modal).not.toContain('377815.66');
   });
+
+  it('compara presença com 🏆 para o maior valor e inclui a linha no Markdown', () => {
+    loadAPI();
+    const Components = loadComponents();
+    const summaries = {
+      1: {
+        id: 1,
+        perfil: { status: 'ok', data: { nome: 'Deputado Um', partido: 'PT', uf: 'SP' } },
+        presenca: { status: 'ok', data: { taxa: 87.5, presentes: 105, total: 120 } },
+      },
+      2: {
+        id: 2,
+        perfil: { status: 'ok', data: { nome: 'Deputado Dois', partido: 'PL', uf: 'RJ' } },
+        presenca: { status: 'ok', data: { taxa: 90, presentes: 90, total: 100 } },
+      },
+    };
+    const modal = Components.compareModal(summaries, [1, 2], { ano: 2025 });
+    const markdown = Components.compareMarkdown(summaries, [1, 2]);
+
+    expect(modal).toContain('87,5% (105/120)');
+    expect(modal).toContain('🏆 90% (90/100)');
+    expect(markdown).toContain('| Presença em Plenário | 87,5% (105/120) | 90% (90/100) |');
+  });
 });
 
 describe('App comparador', () => {

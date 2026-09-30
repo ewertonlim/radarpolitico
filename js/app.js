@@ -66,6 +66,14 @@ const App = (() => {
       orgaos: { data: null, error: null, loading: false, showAll: false },
       frentes: { data: null, error: null, loading: false, query: '', showAll: false },
       historico: { data: null, error: null, loading: false },
+      presenca: {
+        ano: new Date().getFullYear(),
+        loading: false,
+        error: null,
+        data: null,
+        showAusencias: false,
+        comparacao: { loading: false, progresso: null, uf: null, partido: null, error: null },
+      },
     };
   }
 
@@ -75,6 +83,8 @@ const App = (() => {
   let $grid, $filters, $hero, $modal, $modalOverlay, $pagination;
   let $compareBar, $compareOverlay, $compareContent;
   let comparePreviousFocus = null;
+  let presenceCompareRun = 0;
+  let presenceLoadRun = 0;
 
   // ==========================================
   // Initialize
@@ -493,7 +503,108 @@ const App = (() => {
   function renderActivityPanel() {
     const $panel = document.getElementById('tab-activity');
     if (!$panel) return;
+    Components.destroyPresencaChart();
     $panel.innerHTML = Components.activityPanel(state.modal.activity);
+    const presenceData = state.modal.activity.presenca?.data;
+    if (presenceData) Components.renderPresencaChart('presenca-chart', presenceData);
+  }
+
+  function isCurrentPresenceRequest(deputyId, ano) {
+    return state.modalOpen
+      && state.modal.deputyId === deputyId
+      && state.modal.activity.presenca.ano === ano;
+  }
+
+  async function loadPresenca() {
+    const deputyId = state.modal.deputyId;
+    const presenca = state.modal.activity.presenca;
+    const ano = presenca.ano;
+    if (!deputyId || !state.modalOpen || presenca.loading) return;
+    const run = ++presenceLoadRun;
+    const isCurrentRequest = () => run === presenceLoadRun && isCurrentPresenceRequest(deputyId, ano);
+
+    presenca.loading = true;
+    presenca.error = null;
+    presenca.data = null;
+    renderActivityPanel();
+    try {
+      const data = await API.getPresencaPlenario(deputyId, ano);
+      if (!isCurrentRequest()) return;
+      presenca.data = data;
+      presenca.error = null;
+    } catch (err) {
+      if (!isCurrentRequest()) return;
+      presenca.error = err.message || 'Erro desconhecido';
+    } finally {
+      if (isCurrentRequest()) {
+        presenca.loading = false;
+        renderActivityPanel();
+      }
+    }
+  }
+
+  function presenceAverage(ids, results) {
+    const taxas = ids
+      .map(id => results.get(Number(id))?.taxa)
+      .filter(taxa => taxa !== null && taxa !== undefined);
+    return {
+      media: taxas.length ? taxas.reduce((sum, taxa) => sum + taxa, 0) / taxas.length : null,
+      calculados: taxas.length,
+      total: ids.length,
+    };
+  }
+
+  async function comparePresenca() {
+    const deputyId = state.modal.deputyId;
+    const presenca = state.modal.activity.presenca;
+    const ano = presenca.ano;
+    if (!deputyId || !state.modalOpen || presenca.comparacao.loading) return;
+
+    const deputy = state.allDeputies.find(item => Number(item.id) === Number(deputyId)) || {};
+    const status = state.modal.details?.ultimoStatus || {};
+    const uf = deputy.siglaUf || status.siglaUf || state.modal.details?.siglaUf || '';
+    const partido = deputy.siglaPartido || status.siglaPartido || state.modal.details?.siglaPartido || '';
+    const colleagues = state.allDeputies.filter(item => Number(item.id) !== Number(deputyId));
+    const ufIds = colleagues.filter(item => item.siglaUf === uf).map(item => Number(item.id));
+    const partyIds = colleagues.filter(item => item.siglaPartido === partido).map(item => Number(item.id));
+    const ids = [...new Set([...ufIds, ...partyIds])];
+    const run = ++presenceCompareRun;
+    const isCurrentRun = () => run === presenceCompareRun && isCurrentPresenceRequest(deputyId, ano);
+
+    presenca.comparacao = {
+      loading: true,
+      progresso: `Calculando 0/${ids.length}…`,
+      uf: null,
+      partido: null,
+      error: null,
+    };
+    renderActivityPanel();
+
+    let done = 0;
+    const results = new Map();
+    await Promise.all(ids.map(async id => {
+      try {
+        results.set(id, await API.getPresencaPlenario(id, ano));
+      } catch (e) {
+        results.set(id, null);
+      } finally {
+        done++;
+        if (isCurrentRun()) {
+          presenca.comparacao.progresso = `Calculando ${done}/${ids.length}…`;
+          const progress = document.getElementById('presenca-compare-progress');
+          if (progress) progress.textContent = presenca.comparacao.progresso;
+        }
+      }
+    }));
+    if (!isCurrentRun()) return;
+    presenca.comparacao = {
+      loading: false,
+      progresso: null,
+      uf: { sigla: uf, ...presenceAverage(ufIds, results) },
+      partido: { sigla: partido, ...presenceAverage(partyIds, results) },
+      error: null,
+    };
+    renderActivityPanel();
   }
 
   async function loadActivity() {
@@ -505,7 +616,7 @@ const App = (() => {
     a.orgaos.loading = true;
     a.frentes.loading = true;
     a.historico.loading = true;
-    renderActivityPanel();
+    void loadPresenca();
 
     const [orgaos, frentes, historico] = await Promise.allSettled([
       API.getDeputadoOrgaos(deputyId),
@@ -550,6 +661,10 @@ const App = (() => {
     const block = a && a[bloco];
     const deputyId = state.modal.deputyId;
     if (!block || block.loading || !deputyId) return;
+    if (bloco === 'presenca') {
+      await loadPresenca();
+      return;
+    }
 
     const fetchers = {
       orgaos: async () => API.consolidateOrgaos(await API.getDeputadoOrgaos(deputyId)),
@@ -653,6 +768,8 @@ const App = (() => {
     if (!$modalOverlay) return;
     state.modalOpen = false;
     Components.destroySupplierChart();
+    Components.destroyPresencaChart();
+    presenceCompareRun++;
     $modalOverlay.classList.remove('active');
     document.body.style.overflow = '';
   }
@@ -1001,6 +1118,10 @@ const App = (() => {
         }
         return;
       }
+      if (e.target.closest('[data-presenca-compare]')) {
+        comparePresenca();
+        return;
+      }
 
       // Proposition details
       const propRetryBtn = e.target.closest('.prop-retry');
@@ -1031,6 +1152,27 @@ const App = (() => {
 
 
     });
+
+    document.addEventListener('change', (e) => {
+      const select = e.target.closest('select[data-presenca-ano]');
+      if (!select || !state.modalOpen) return;
+      const presenca = state.modal.activity.presenca;
+      const ano = Number(select.value);
+      if (!Number.isInteger(ano) || ano === presenca.ano) return;
+      presenceLoadRun++;
+      presenceCompareRun++;
+      presenca.ano = ano;
+      presenca.loading = false;
+      presenca.error = null;
+      presenca.data = null;
+      presenca.comparacao = { loading: false, progresso: null, uf: null, partido: null, error: null };
+      void loadPresenca();
+    });
+
+    document.addEventListener('toggle', (e) => {
+      if (e.target.id !== 'presenca-ausencias' || !state.modalOpen) return;
+      state.modal.activity.presenca.showAusencias = e.target.open;
+    }, true);
 
     // Frentes search (delegated — re-renders only the list, keeping input focus)
     document.addEventListener('input', (e) => {
