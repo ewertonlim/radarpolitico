@@ -24,6 +24,9 @@ async function setupApp() {
     deputies.find(d => d.id === id) || deputies[0]);
   API.getAllDespesasLegislatura = vi.fn().mockResolvedValue({ expenses: [], failedYears: [] });
   API.getDeputadoProposicoes = vi.fn().mockResolvedValue([]);
+  API.getPresencaPlenario = vi.fn().mockResolvedValue({
+    presentes: 0, total: 0, taxa: null, ausencias: [], porMes: {}, ajustado: false, periodos: [],
+  });
   return { API, App };
 }
 

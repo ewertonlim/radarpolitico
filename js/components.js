@@ -904,6 +904,90 @@ const Components = (() => {
     `;
   }
 
+  function presencePercent(value) {
+    return Number(value).toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+  }
+
+  function shortPresenceDate(value) {
+    const date = String(value || '');
+    return `${date.slice(8, 10)}/${date.slice(5, 7)}`;
+  }
+
+  function presencaSection(presenca = {}) {
+    const ano = Number(presenca.ano) || new Date().getFullYear();
+    const currentYear = new Date().getFullYear();
+    const years = Array.from({ length: Math.max(0, currentYear - 2023 + 1) }, (_, i) => 2023 + i);
+    const data = presenca.data;
+    let content;
+    if (presenca.loading) {
+      content = activitySkeleton();
+    } else if (presenca.error) {
+      content = activityBlockError('presenca', presenca.error);
+    } else if (!data || data.taxa === null) {
+      content = '<div class="empty-state"><div class="empty-state-icon">🪑</div><div class="empty-state-text">Sem sessões deliberativas no período em exercício deste ano</div></div>';
+    } else {
+      const pct = presencePercent(data.taxa);
+      const badgeClass = data.taxa >= 90 ? 'boa' : data.taxa >= 75 ? 'regular' : 'baixa';
+      const badgeLabel = data.taxa >= 90 ? 'Boa' : data.taxa >= 75 ? 'Regular' : 'Baixa';
+      const periodText = data.ajustado && data.periodos?.length
+        ? `<p class="presenca-periodo">Em exercício: ${data.periodos.map(period => `${shortPresenceDate(period.inicio)} – ${shortPresenceDate(period.fim)}`).join(', ')}<br /><small>* denominador ajustado ao período em exercício</small></p>`
+        : '';
+      const monthSummary = Object.entries(data.porMes || {})
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, value]) => `${month}: ${presencePercent(value.total ? value.presentes / value.total * 100 : 0)}%`)
+        .join(', ');
+      const comparison = presenca.comparacao || {};
+      const comparisonResult = (label, group) => {
+        if (!group) return '';
+        const value = group.media === null ? '—' : `${presencePercent(group.media)}%`;
+        const count = group.calculados < group.total
+          ? ` (calculada com ${group.calculados} de ${group.total} deputados)`
+          : '';
+        return `<p class="presenca-comparacao-resultado">Média ${label} ${escapeHTML(group.sigla || '')}: ${value}${count}</p>`;
+      };
+      content = `
+        <div class="presenca-kpi-row">
+          <div class="presenca-kpi" aria-label="Presença de ${escapeHTML(pct)}% em ${ano}: ${data.presentes} de ${data.total} sessões">
+            ${escapeHTML(pct)}% — ${data.presentes} de ${data.total} sessões deliberativas
+          </div>
+          <span class="presenca-badge presenca-badge--${badgeClass}">${badgeLabel}</span>
+        </div>
+        ${periodText}
+        <div class="presenca-comparacao">
+          <button class="btn-load-more" type="button" data-presenca-compare${comparison.loading ? ' disabled' : ''}>Comparar com a bancada</button>
+          <p id="presenca-compare-progress" class="compare-progress" role="status">${escapeHTML(comparison.progresso || '')}</p>
+          ${comparison.error ? `<p class="presenca-comparacao-erro">${escapeHTML(comparison.error)}</p>` : ''}
+          ${comparisonResult('bancada', comparison.uf)}
+          ${comparisonResult('partido', comparison.partido)}
+        </div>
+        <div class="presenca-chart-container"><canvas id="presenca-chart" role="img" aria-label="Presença mensal: ${escapeHTML(monthSummary || 'sem dados mensais')}"></canvas></div>
+        <details id="presenca-ausencias" class="presenca-ausencias"${presenca.showAusencias ? ' open' : ''}>
+          <summary>Sessões com ausência (${data.ausencias.length})</summary>
+          <ul class="presenca-ausencias-list">${data.ausencias.map(session => `
+            <li>
+              <span>${API.formatDate(session.dataHoraInicio)}</span>
+              <span>${escapeHTML(session.descricao || 'Sessão sem descrição')}</span>
+              <a href="https://www.camara.leg.br/evento-legislativo/${escapeHTML(session.id)}" target="_blank" rel="noopener">Ver evento</a>
+            </li>`).join('')}
+          </ul>
+        </details>
+      `;
+    }
+
+    return `
+      <div class="activity-block" id="activity-presenca">
+        <div class="presenca-heading">
+          <h3 class="activity-block-title">🪑 Presença em Plenário</h3>
+          <label class="presenca-ano-label" for="presenca-ano">Ano
+            <select id="presenca-ano" data-presenca-ano>${years.map(year => `<option value="${year}"${year === ano ? ' selected' : ''}>${year}</option>`).join('')}</select>
+          </label>
+        </div>
+        ${content}
+        <p class="presenca-nota">Ausências podem ter justificativa (licença médica, missão oficial). A API de Dados Abertos não informa justificativas; confira na página do evento.</p>
+      </div>
+    `;
+  }
+
   function activityPanel(activity) {
     if (!activity || (!activity.loaded && !activity.loading)) {
       return '<div class="activity-panel"></div>';
@@ -911,6 +995,7 @@ const Components = (() => {
 
     return `
       <div class="activity-panel">
+        ${presencaSection(activity.presenca || { ano: new Date().getFullYear() })}
         <div class="activity-block" id="activity-orgaos">
           <h3 class="activity-block-title">🏛️ Comissões e órgãos</h3>
           ${orgaosBlock(activity.orgaos)}
@@ -1049,14 +1134,14 @@ const Components = (() => {
     return render(block.data);
   }
 
-  function compareRow(label, cells, { better = null, format = value => value } = {}) {
+  function compareRow(label, cells, { better = null, format = value => value, bestMarker = '▲ ' } = {}) {
     const values = cells.map(c => c && typeof c.value === 'number' ? c.value : (typeof c === 'number' ? c : null));
     const ranks = API.rankValues(values, better);
     const rendered = cells.map((cell, i) => {
       const value = cell && Object.prototype.hasOwnProperty.call(cell, 'value') ? cell.value : cell;
       const text = cell && cell.html ? cell.html : format(value);
       const rank = ranks[i];
-      const marker = rank === 'best' ? '▲ ' : rank === 'worst' ? '▼ ' : '';
+      const marker = rank === 'best' ? bestMarker : rank === 'worst' ? '▼ ' : '';
       return `<div class="compare-cell ${rank ? `compare-${rank}` : ''}">${rank ? `<span class="sr-only">${rank === 'best' ? 'melhor' : 'pior'}</span>` : ''}${marker}${text}</div>`;
     }).join('');
     return `<div class="compare-row"><div class="compare-label">${escapeHTML(label)}</div>${rendered}</div>`;
@@ -1072,7 +1157,7 @@ const Components = (() => {
     return render(block.data);
   }
 
-  function compareModal(summaries = {}, ids = [], { window: voteWindow = null, votesStatus = 'idle', votesProgress = null } = {}) {
+  function compareModal(summaries = {}, ids = [], { window: voteWindow = null, votesStatus = 'idle', votesProgress = null, ano = new Date().getFullYear() } = {}) {
     const list = ids.map(id => summaries[id] || { id });
     const cols = list.length || ids.length || 1;
     const profileCells = list.map(s => compareBlockCell(s, 'perfil', p => `<div class="compare-deputy">
@@ -1083,6 +1168,7 @@ const Components = (() => {
     const producao = getData('producao');
     const votacoes = getData('votacoes');
     const atuacao = getData('atuacao');
+    const presenca = getData('presenca');
     const currency = value => value === null || value === undefined ? '—' : API.formatCurrency(value);
     const number = value => value === null || value === undefined ? '—' : Number(value).toLocaleString('pt-BR');
     const pct = value => value === null || value === undefined ? 'Sem orientação' : `${Number(value).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`;
@@ -1124,6 +1210,12 @@ const Components = (() => {
           ${row('Com cargo de direção', 'atuacao', atuacao.map(a => a.comCargo), { render: d => number(d.comCargo) })}
           ${row('Frentes', 'atuacao', atuacao.map(a => a.frentes), { render: d => number(d.frentes) })}
           ${row('Trocas de partido', 'atuacao', atuacao.map(a => a.trocasPartido), { render: d => number(d.trocasPartido) })}
+          ${row(`🪑 Presença em Plenário (${ano})`, 'presenca', presenca.map(p => p.taxa), {
+    better: 'max',
+    numeric: true,
+    bestMarker: '🏆 ',
+    render: d => d.taxa === null ? '—' : `${pct(d.taxa)} (${d.presentes}/${d.total})`,
+  })}
         </section>
       </div>
       <div class="compare-chart-wrap"><canvas id="compare-chart" role="img" aria-label="Gastos por categoria comparados"></canvas><p class="sr-only" id="compare-chart-desc">${escapeHTML(chartDesc || 'Sem dados de gastos para gerar o gráfico.')}</p></div>
@@ -1174,6 +1266,10 @@ const Components = (() => {
       ['Alinhamento c/ Governo', ...ids.map(id => summaries[id]?.votacoes?.data?.governo?.pct == null ? 'Sem orientação' : `${summaries[id].votacoes.data.governo.pct}%`)],
       ['Comissões', ...ids.map(id => String(summaries[id]?.atuacao?.data?.comissoes ?? '—'))],
       ['Frentes', ...ids.map(id => String(summaries[id]?.atuacao?.data?.frentes ?? '—'))],
+      ['Presença em Plenário', ...ids.map(id => {
+        const data = summaries[id]?.presenca?.data;
+        return data?.taxa == null ? '—' : `${presencePercent(data.taxa)}% (${data.presentes}/${data.total})`;
+      })],
     ];
     const text = rows.map(r => `| ${r.join(' | ')} |`).join('\n');
     const dates = window ? `\n\nJanela de votações: ${API.formatDate(window.dataInicio)} – ${API.formatDate(window.dataFim)}` : '';
@@ -1437,6 +1533,47 @@ const Components = (() => {
     });
   }
 
+  let presencaChartInstance = null;
+
+  function destroyPresencaChart() {
+    if (presencaChartInstance) {
+      presencaChartInstance.destroy();
+      presencaChartInstance = null;
+    }
+  }
+
+  function renderPresencaChart(canvasId, presencaData) {
+    destroyPresencaChart();
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || typeof Chart === 'undefined' || !presencaData?.porMes) return;
+    const months = Object.entries(presencaData.porMes).sort(([a], [b]) => a.localeCompare(b));
+    if (!months.length) return;
+    presencaChartInstance = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: months.map(([month]) => month),
+        datasets: [{
+          label: 'Presença (%)',
+          data: months.map(([, value]) => value.total ? value.presentes / value.total * 100 : 0),
+          backgroundColor: '#6366f1',
+          borderRadius: 5,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: { beginAtZero: true, max: 100, ticks: { color: '#8b8fa3', callback: value => `${value}%` }, grid: { color: 'rgba(255,255,255,0.08)' } },
+          x: { ticks: { color: '#8b8fa3' }, grid: { display: false } },
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: context => ` ${presencePercent(context.raw)}%` } },
+        },
+      },
+    });
+  }
+
   // ==========================================
   // Pagination
   // ==========================================
@@ -1495,6 +1632,8 @@ const Components = (() => {
     supplierFilterChip,
     renderSupplierChart,
     destroySupplierChart,
+    renderPresencaChart,
+    destroyPresencaChart,
     propositionItem,
     propositionDetail,
     propositionDetailSkeleton,
@@ -1510,6 +1649,7 @@ const Components = (() => {
     voteListControls,
     votesPanel,
     activityPanel,
+    presencaSection,
     activitySkeleton,
     activityBlockError,
     orgaosBlock,
