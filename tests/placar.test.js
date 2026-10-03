@@ -246,6 +246,53 @@ describe('API.getPlacarVotacao', () => {
   });
 });
 
+describe('API.getVotosVotacao cache', () => {
+  it('não cacheia votos de votação registrada hoje', async () => {
+    vi.useFakeTimers();
+    const API = loadAPI();
+    let votosCalls = 0;
+    const hoje = new Date().toISOString();
+    fetch.mockImplementation(async (url) => {
+      if (url.includes('/votacoes/123-4/votos')) { votosCalls++; return jsonResponse({ dados: placarVotos }); }
+      if (url.includes('/votacoes/123-4')) return jsonResponse({ dados: { ...placarVotacaoDetalhe, id: '123-4', dataHoraRegistro: hoje } });
+      return jsonResponse({ dados: [], links: [] });
+    });
+
+    const p1 = API.getVotosVotacao('123-4');
+    await vi.advanceTimersByTimeAsync(30000);
+    await p1;
+    expect(localStorage.getItem('rp_placar_votos_123-4')).toBeNull();
+
+    // expira o cache de 5 min do fetchJSON para forçar um novo fetch de /votos
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+    const p2 = API.getVotosVotacao('123-4');
+    await vi.advanceTimersByTimeAsync(30000);
+    await p2;
+    expect(votosCalls).toBe(2);
+    expect(localStorage.getItem('rp_placar_votos_123-4')).toBeNull();
+  });
+
+  it('cacheia votos de votação encerrada há mais de 24 h', async () => {
+    vi.useFakeTimers();
+    const API = loadAPI();
+    let votosCalls = 0;
+    fetch.mockImplementation(async (url) => {
+      if (url.includes('/votacoes/123-4/votos')) { votosCalls++; return jsonResponse({ dados: placarVotos }); }
+      if (url.includes('/votacoes/123-4')) return jsonResponse({ dados: { ...placarVotacaoDetalhe, id: '123-4', dataHoraRegistro: '2025-07-17T10:00:00' } });
+      return jsonResponse({ dados: [], links: [] });
+    });
+
+    const p1 = API.getVotosVotacao('123-4');
+    await vi.advanceTimersByTimeAsync(30000);
+    const dados1 = await p1;
+    expect(localStorage.getItem('rp_placar_votos_123-4')).toBeTruthy();
+
+    const dados2 = await API.getVotosVotacao('123-4');
+    expect(votosCalls).toBe(1);
+    expect(dados2).toEqual(dados1);
+  });
+});
+
 describe('App placar', () => {
   it('parseVotacaoParam e serializeVotacaoParam', () => {
     loadAPI();
@@ -256,6 +303,36 @@ describe('App placar', () => {
     expect(App.parseVotacaoParam('?votacao=257161')).toBeNull();
     expect(App.parseVotacaoParam('?comparar=1,2')).toBeNull();
     expect(App.serializeVotacaoParam('257161-483')).toBe('votacao=257161-483');
+  });
+
+  // Deve rodar antes de outros testes que fazem App.init(): listeners de
+  // instâncias anteriores ficariam vivos e re-renderizariam #placar-lista.
+  it('limpa a busca debounced ao fechar e reabrir o placar', async () => {
+    vi.useFakeTimers();
+    buildDOM();
+    const API = loadAPI();
+    loadComponents();
+    const App = loadApp();
+    API.getAllDeputados = vi.fn().mockResolvedValue(placarDeputados);
+    API.listarVotacoesMes = vi.fn().mockResolvedValue(API.marcarVotacoesLista(placarListaBruta));
+    await App.init();
+
+    App.openPlacarModal();
+    await vi.advanceTimersByTimeAsync(10);
+
+    const input = document.getElementById('placar-busca');
+    input.value = 'licenciamento';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // fecha antes dos 250 ms do debounce e reabre — o filtro antigo não pode vazar
+    App.closePlacarModal();
+    App.openPlacarModal();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(App.state.placar.busca).toBe('');
+    expect(document.getElementById('placar-busca').value).toBe('');
+    const lista = document.getElementById('placar-lista');
+    expect(lista.querySelectorAll('.placar-item').length).toBe(3);
   });
 
   it('abre e fecha o placar com a URL sincronizada', async () => {
@@ -337,6 +414,34 @@ describe('App placar', () => {
     await vi.waitFor(() => expect(App.state.modal.details).toBeTruthy(), { timeout: 5000 });
     expect(App.state.modal.deputyId).toBe(1);
   });
+
+  it('mantém o foco no select de filtro ao re-renderizar o corpo do placar', async () => {
+    buildDOM();
+    const API = loadAPI();
+    loadComponents();
+    const App = loadApp();
+    API.getAllDeputados = vi.fn().mockResolvedValue(placarDeputados);
+    fetch.mockImplementation(async (url) => {
+      if (url.includes('/votacoes/257161-483/votos')) return jsonResponse({ dados: placarVotos });
+      if (url.includes('/votacoes/257161-483/orientacoes')) return jsonResponse({ dados: placarOrientacoes });
+      if (url.includes('/votacoes/257161-483')) return jsonResponse({ dados: placarVotacaoDetalhe });
+      if (url.includes('/votacoes?')) return jsonResponse({ dados: placarListaBruta, links: [] });
+      if (url.includes('/deputados?')) return jsonResponse({ dados: placarDeputados, links: [] });
+      return jsonResponse({ dados: [], links: [] });
+    });
+    await App.init();
+
+    App.openPlacarModal('257161-483');
+    await vi.waitFor(() => expect(App.state.placar.placar.status).toBe('ok'), { timeout: 5000 });
+
+    const sel = document.getElementById('placar-filtro-uf');
+    sel.focus();
+    sel.value = 'SP';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(App.state.placar.filtros.uf).toBe('SP');
+    expect(document.activeElement.id).toBe('placar-filtro-uf');
+  });
+
 });
 
 describe('Components placar', () => {

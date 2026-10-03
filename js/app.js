@@ -1106,8 +1106,10 @@ const App = (() => {
     const el = document.getElementById('placar-body');
     const data = state.placar.placar.data;
     if (!el || !data) return;
+    const focusedId = el.contains(document.activeElement) ? document.activeElement.id : null;
     Components.destroyPlacarChart();
     el.innerHTML = Components.placarBody(data, state.placar.filtros);
+    if (focusedId) document.getElementById(focusedId)?.focus();
     renderPlacarChartIfNeeded();
   }
 
@@ -1180,6 +1182,9 @@ const App = (() => {
     if (!$placarOverlay) return;
     placarListaRun++;
     placarVotacaoRun++;
+    clearTimeout(placarBuscaTimer);
+    placarBuscaTimer = null;
+    state.placar.busca = '';
     state.placar.open = false;
     $placarOverlay.classList.remove('active');
     Components.destroyPlacarChart();

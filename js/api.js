@@ -677,7 +677,12 @@ const API = (() => {
         urlFoto: v.deputado_.urlFoto,
       } : {},
     }));
-    setCachedTTL(placarVotosCache, storageKey, storageKey, dados);
+    // Só cacheia votos de votações encerradas há mais de 24 h — uma votação
+    // recente/em andamento pode mudar e ficaria congelada por 30 dias.
+    const detalhe = await getVotacaoDetalhe(idVotacao).catch(() => null);
+    const encerrada = detalhe?.dataHoraRegistro
+      && (Date.now() - Date.parse(detalhe.dataHoraRegistro)) > 24 * 60 * 60 * 1000;
+    if (encerrada) setCachedTTL(placarVotosCache, storageKey, storageKey, dados);
     return dados;
   }
 
