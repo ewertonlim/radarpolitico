@@ -653,13 +653,32 @@ const API = (() => {
   }
 
   /**
-   * Get individual votes of a votação (empty dados for symbolic votes)
+   * Get individual votes of a votação (empty dados for symbolic votes).
+   * Cached in memory + localStorage (votações encerradas são imutáveis).
+   * Stored as a trimmed record; errors are never cached.
    * @param {number|string} idVotacao
    * @returns {Promise<Array>}
    */
+  const placarVotosCache = new Map();
+
   async function getVotosVotacao(idVotacao) {
+    const storageKey = `rp_placar_votos_${idVotacao}`;
+    const cached = getCachedTTL(placarVotosCache, storageKey, storageKey, VOTACAO_DETALHE_TTL);
+    if (cached) return cached;
+
     const response = await fetchJSON(buildURL(`/votacoes/${idVotacao}/votos`));
-    return response.dados || [];
+    const dados = (response.dados || []).map(v => ({
+      tipoVoto: v.tipoVoto,
+      deputado_: v.deputado_ ? {
+        id: v.deputado_.id,
+        nome: v.deputado_.nome,
+        siglaPartido: v.deputado_.siglaPartido,
+        siglaUf: v.deputado_.siglaUf,
+        urlFoto: v.deputado_.urlFoto,
+      } : {},
+    }));
+    setCachedTTL(placarVotosCache, storageKey, storageKey, dados);
+    return dados;
   }
 
   /**
@@ -672,8 +691,11 @@ const API = (() => {
     if (stored) return stored;
 
     const response = await fetchJSON(buildURL(`/votacoes/${idVotacao}`));
-    writeVotacaoDetalheStorage(idVotacao, response.dados);
-    return response.dados;
+    const dados = response.dados;
+    if (dados && (typeof dados !== 'object' || Object.keys(dados).length > 0)) {
+      writeVotacaoDetalheStorage(idVotacao, dados);
+    }
+    return dados;
   }
 
   /**
@@ -851,6 +873,277 @@ const API = (() => {
     votosCache.set(cacheKey, entry);
     writeVotosStorage(cacheKey, entry);
     return items;
+  }
+
+  // ==========================================
+  // Placar de Votações em Plenário (RP-010)
+  // ==========================================
+  const placarListaCache = new Map();
+  const DEPUTADOS_EXERCICIO_TTL = 24 * 60 * 60 * 1000;
+  const deputadosExercicioCache = new Map();
+
+  /**
+   * Get ONLY the deputies currently in exercício (~513). Unlike getDeputados,
+   * this does NOT pass idLegislatura — the full-legislature listing includes
+   * everyone who ever held a seat (~650), which would inflate "Não votou".
+   * Cached in memory + localStorage for 24 h; errors/empty are never cached.
+   * @returns {Promise<Array<{id, nome, siglaPartido, siglaUf, urlFoto}>>}
+   */
+  async function getDeputadosEmExercicio() {
+    const storageKey = 'rp_deputados_exercicio';
+    const cached = getCachedTTL(deputadosExercicioCache, storageKey, storageKey, DEPUTADOS_EXERCICIO_TTL);
+    if (cached) return cached;
+
+    let url = buildURL('/deputados', {
+      ordem: 'ASC',
+      ordenarPor: 'nome',
+      itens: 100,
+      pagina: 1,
+    });
+    const unique = new Map();
+    while (url) {
+      const page = await fetchJSON(url);
+      (page.dados || []).forEach(d => {
+        if (d.id !== undefined && d.id !== null && !unique.has(d.id)) unique.set(d.id, d);
+      });
+      const next = (page.links || []).find(l => l.rel === 'next');
+      url = next ? next.href : null;
+    }
+    const items = [...unique.values()].map(d => ({
+      id: d.id,
+      nome: d.nome,
+      siglaPartido: d.siglaPartido,
+      siglaUf: d.siglaUf,
+      urlFoto: d.urlFoto,
+    }));
+    if (!items.length) return items;
+    setCachedTTL(deputadosExercicioCache, storageKey, storageKey, items);
+    return items;
+  }
+
+  /**
+   * Mark each lista item as nominal (registro individual) or simbólica.
+   * Heuristic: nominal votações carry "Sim: N" tallies in the description.
+   * @param {Array} dados - raw items from /votacoes
+   * @returns {Array<{id, data, dataHoraRegistro, descricao, aprovacao, proposicaoObjeto, nominal}>}
+   */
+  function marcarVotacoesLista(dados = []) {
+    return (dados || []).map(v => ({
+      id: v.id,
+      data: v.data,
+      dataHoraRegistro: v.dataHoraRegistro,
+      descricao: v.descricao,
+      aprovacao: v.aprovacao,
+      proposicaoObjeto: v.proposicaoObjeto,
+      nominal: /Sim:\s*\d+/i.test(v.descricao || ''),
+    }));
+  }
+
+  /**
+   * List all Plenário votações of one month ('YYYY-MM'), marked as nominal/simbólica.
+   * Cached in memory + localStorage (6 h current month, 7 days closed months).
+   * @param {string} yyyyMm
+   * @returns {Promise<Array>}
+   */
+  async function listarVotacoesMes(yyyyMm) {
+    const monthKey = String(yyyyMm).slice(0, 7);
+    const storageKey = `rp_placar_lista_${monthKey}`;
+    const ttl = votosTTL(monthKey);
+    const cached = getCachedTTL(placarListaCache, storageKey, storageKey, ttl);
+    if (cached) return cached;
+
+    const w = voteMonthWindow(monthKey);
+    const dados = await getVotacoesPlenario(w.dataInicio, w.dataFim);
+    const items = marcarVotacoesLista(dados);
+    setCachedTTL(placarListaCache, storageKey, storageKey, items);
+    return items;
+  }
+
+  /**
+   * Build per-deputy placar rows: everyone who voted plus deputies in exercício
+   * without a registered vote ('Não votou'). Sorted by name (pt-BR).
+   * @param {Array} votos - trimmed records from /votos
+   * @param {Array} deputados - deputies in exercício (state.allDeputies shape)
+   * @param {Array} orientacoes - raw /orientacoes records
+   * @returns {Array<{id, nome, siglaPartido, siglaUf, urlFoto, voto, orientacaoPartido, alinhamento}>}
+   */
+  function linhasPlacar(votos = [], deputados = [], orientacoes = []) {
+    const votaram = new Set();
+    const linhas = (votos || []).map(v => {
+      const dep = v.deputado_ || {};
+      votaram.add(Number(dep.id));
+      const voto = normalizeVoto(v.tipoVoto);
+      const orientacaoPartido = findOrientacaoPartido(orientacoes, dep.siglaPartido) || null;
+      return {
+        id: dep.id,
+        nome: dep.nome,
+        siglaPartido: dep.siglaPartido,
+        siglaUf: dep.siglaUf,
+        urlFoto: dep.urlFoto,
+        voto,
+        orientacaoPartido,
+        alinhamento: classificarAlinhamento(voto, orientacaoPartido),
+      };
+    });
+
+    (deputados || []).forEach(d => {
+      if (votaram.has(Number(d.id))) return;
+      linhas.push({
+        id: d.id,
+        nome: d.nome,
+        siglaPartido: d.siglaPartido,
+        siglaUf: d.siglaUf,
+        urlFoto: d.urlFoto,
+        voto: 'Não votou',
+        orientacaoPartido: findOrientacaoPartido(orientacoes, d.siglaPartido) || null,
+        alinhamento: null,
+      });
+    });
+
+    linhas.sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+    return linhas;
+  }
+
+  const PLACAR_TIPOS = ['Sim', 'Não', 'Abstenção', 'Obstrução', 'Artigo 17'];
+
+  /**
+   * Summarize placar rows into totals, per-party and per-UF breakdowns.
+   * 'Outros' = Abstenção + Obstrução + Artigo 17 + unknown types.
+   * @param {Array} linhas - output of linhasPlacar
+   * @returns {{totais: Object, porPartido: Array, porUf: Array}}
+   */
+  function resumirLinhas(linhas = []) {
+    const totais = { Sim: 0, 'Não': 0, 'Abstenção': 0, 'Obstrução': 0, 'Artigo 17': 0, 'Não votou': 0, votantes: 0 };
+    const porPartidoMap = new Map();
+    const porUfMap = new Map();
+
+    linhas.forEach(l => {
+      const voto = l.voto === 'Não votou' ? 'Não votou' : (PLACAR_TIPOS.includes(l.voto) ? l.voto : 'Outros');
+      if (voto === 'Não votou') totais['Não votou']++;
+      else {
+        totais.votantes++;
+        if (voto !== 'Outros') totais[voto]++;
+      }
+
+      const sigla = l.siglaPartido || '—';
+      let p = porPartidoMap.get(sigla);
+      if (!p) {
+        p = { sigla, Sim: 0, Nao: 0, Outros: 0, NaoVotou: 0, total: 0, orientacao: null, seguiram: 0, divergiram: 0, _orientacaoSet: false };
+        porPartidoMap.set(sigla, p);
+      }
+      const uf = l.siglaUf || '—';
+      let u = porUfMap.get(uf);
+      if (!u) {
+        u = { uf, Sim: 0, Nao: 0, Outros: 0, NaoVotou: 0, total: 0 };
+        porUfMap.set(uf, u);
+      }
+
+      [p, u].forEach(bucket => {
+        bucket.total++;
+        if (voto === 'Sim') bucket.Sim++;
+        else if (voto === 'Não') bucket.Nao++;
+        else if (voto === 'Não votou') bucket.NaoVotou++;
+        else bucket.Outros++;
+      });
+
+      if (!p._orientacaoSet) {
+        p.orientacao = l.orientacaoPartido || null;
+        p._orientacaoSet = true;
+      }
+      if (l.alinhamento === 'seguiu') p.seguiram++;
+      else if (l.alinhamento === 'divergiu') p.divergiram++;
+    });
+
+    const porPartido = [...porPartidoMap.values()]
+      .map(({ _orientacaoSet, ...p }) => ({
+        ...p,
+        pctSeguiu: (p.seguiram + p.divergiram) > 0 ? (p.seguiram / (p.seguiram + p.divergiram)) * 100 : null,
+      }))
+      .sort((a, b) => b.total - a.total || a.sigla.localeCompare(b.sigla));
+    const porUf = [...porUfMap.values()].sort((a, b) => a.uf.localeCompare(b.uf));
+
+    return { totais, porPartido, porUf };
+  }
+
+  /**
+   * Extract transversal orientations (Governo, Maioria, Minoria, Oposição).
+   * Accepts 'OPOSICAO' without accent; case-insensitive; '' → null.
+   * @param {Array} orientacoes
+   * @returns {{Governo, Maioria, Minoria, 'Oposição'}}
+   */
+  function orientacoesTransversais(orientacoes = []) {
+    const out = { Governo: null, Maioria: null, Minoria: null, 'Oposição': null };
+    const map = {
+      GOVERNO: 'Governo',
+      MAIORIA: 'Maioria',
+      MINORIA: 'Minoria',
+      'OPOSIÇÃO': 'Oposição',
+      OPOSICAO: 'Oposição',
+    };
+    (orientacoes || []).forEach(o => {
+      const key = map[String(o?.siglaPartidoBloco || '').toUpperCase()];
+      if (key) out[key] = normalizeVoto(o.orientacaoVoto) || null;
+    });
+    return out;
+  }
+
+  /**
+   * Filter placar rows by UF, party and/or vote type (any normalized vote or 'Não votou').
+   * @param {Array} linhas
+   * @param {{uf?: string, partido?: string, voto?: string}} filtros
+   * @returns {Array}
+   */
+  function filtrarLinhasPlacar(linhas = [], { uf = '', partido = '', voto = '' } = {}) {
+    return (linhas || []).filter(l => {
+      if (uf && l.siglaUf !== uf) return false;
+      if (partido && l.siglaPartido !== partido) return false;
+      if (voto && l.voto !== voto) return false;
+      return true;
+    });
+  }
+
+  /**
+   * Aggregate a votação placar: rows + summary + transversal orientations.
+   * @param {Array} votos
+   * @param {Array} deputados
+   * @param {Array} orientacoes
+   * @returns {{linhas: Array, totais: Object, porPartido: Array, porUf: Array, transversais: Object}}
+   */
+  function agregarPlacar(votos = [], deputados = [], orientacoes = []) {
+    const linhas = linhasPlacar(votos, deputados, orientacoes);
+    return {
+      linhas,
+      ...resumirLinhas(linhas),
+      transversais: orientacoesTransversais(orientacoes),
+    };
+  }
+
+  /**
+   * Load a full placar: detail + votes + orientations in parallel (via the queue),
+   * aggregated against the deputies currently in exercício.
+   * @param {number|string} idVotacao
+   * @param {Array} deputadosEmExercicio
+   * @returns {Promise<{detalhe, votos, orientacoes, simbolica, linhas, totais, porPartido, porUf, transversais}>}
+   */
+  async function getPlacarVotacao(idVotacao, deputadosEmExercicio = null) {
+    const [detalhe, votos, orientacoes, deputados] = await Promise.all([
+      getVotacaoDetalhe(idVotacao),
+      getVotosVotacao(idVotacao),
+      getOrientacoesVotacao(idVotacao),
+      deputadosEmExercicio === null || deputadosEmExercicio === undefined
+        ? getDeputadosEmExercicio()
+        : Promise.resolve(deputadosEmExercicio),
+    ]);
+    if (!detalhe || (typeof detalhe === 'object' && Object.keys(detalhe).length === 0)) {
+      throw new Error('Votação não encontrada');
+    }
+    return {
+      detalhe,
+      votos,
+      orientacoes,
+      simbolica: votos.length === 0,
+      ...agregarPlacar(votos, deputados, orientacoes),
+    };
   }
 
   // ==========================================
@@ -1909,6 +2202,15 @@ const API = (() => {
     rankValues,
     compareVotesWindow,
     getVotosComparados,
+    marcarVotacoesLista,
+    listarVotacoesMes,
+    linhasPlacar,
+    resumirLinhas,
+    orientacoesTransversais,
+    filtrarLinhasPlacar,
+    agregarPlacar,
+    getPlacarVotacao,
+    getDeputadosEmExercicio,
     computeDeputySummary,
     computeCompareSection,
     COMPARE_VOTES_MONTHS,
