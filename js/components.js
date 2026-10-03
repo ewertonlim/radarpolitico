@@ -1613,6 +1613,299 @@ const Components = (() => {
   }
 
   // ==========================================
+  // Placar de Votações em Plenário (RP-010)
+  // ==========================================
+  function proposicaoObjetoLabel(p) {
+    if (!p) return '';
+    if (typeof p === 'string') return p;
+    if (p.siglaTipo && p.numero) return `${p.siglaTipo} ${p.numero}/${p.ano}`;
+    return p.siglaTipo || '';
+  }
+
+  function normalizeBusca(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+
+  function placarBuscaMatch(item, busca) {
+    const q = normalizeBusca(busca);
+    if (!q) return true;
+    return normalizeBusca(item.descricao).includes(q)
+      || normalizeBusca(proposicaoObjetoLabel(item.proposicaoObjeto)).includes(q);
+  }
+
+  function placarAprovacaoBadge(aprovacao) {
+    if (aprovacao === 1) return '<span class="placar-badge placar-badge--aprovada">Aprovada</span>';
+    if (aprovacao === 0) return '<span class="placar-badge placar-badge--rejeitada">Rejeitada</span>';
+    return '';
+  }
+
+  function placarItemVotacao(item) {
+    const data = API.formatDate(item.dataHoraRegistro || item.data);
+    const prop = proposicaoObjetoLabel(item.proposicaoObjeto);
+    const inner = `
+      <div class="placar-item-header">
+        <span class="placar-item-data">🗓️ ${escapeHTML(data)}</span>
+        ${placarAprovacaoBadge(item.aprovacao)}
+      </div>
+      ${prop ? `<div class="placar-item-prop">${escapeHTML(prop)}</div>` : ''}
+      <div class="placar-item-desc">${escapeHTML(item.descricao || 'Votação')}</div>`;
+    if (!item.nominal) {
+      return `<div class="placar-item placar-item--simbolico" aria-disabled="true">
+        ${inner}
+        <span class="placar-simbolico-tag">Votação simbólica — sem registro individual</span>
+      </div>`;
+    }
+    return `<button type="button" class="placar-item" data-votacao-id="${escapeHTML(item.id)}">${inner}</button>`;
+  }
+
+  function placarListaSkeleton() {
+    const block = `
+      <div class="skeleton-card" style="margin-bottom:var(--space-md)">
+        <div class="skeleton skeleton-line w-40" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line w-60"></div>
+      </div>`;
+    return `<div class="placar-lista-skeleton">${block.repeat(4)}</div>`;
+  }
+
+  function placarListaVotacoes(items = [], { status = 'idle', error = null, busca = '' } = {}) {
+    if (status === 'loading' || status === 'idle') return placarListaSkeleton();
+    if (status === 'error') {
+      return `<div class="error-banner">
+        ⚠️ Erro ao carregar as votações do período.
+        <br><small>${escapeHTML(error || '')}</small>
+        <button class="btn-load-more" type="button" data-placar-retry="lista">Tentar novamente</button>
+      </div>`;
+    }
+    const filtered = busca ? items.filter(item => placarBuscaMatch(item, busca)) : items;
+    if (!filtered.length) {
+      const msg = busca ? 'Nenhuma votação encontrada para a busca' : 'Nenhuma votação em Plenário neste período';
+      return `<div class="empty-state"><div class="empty-state-icon">🗳️</div><div class="empty-state-text">${msg}</div></div>`;
+    }
+    return `<div class="placar-lista-items">${filtered.map(placarItemVotacao).join('')}</div>`;
+  }
+
+  function placarListaView(st = {}) {
+    const mesOptions = (st.meses || []).map(m => {
+      const [y, mo] = m.split('-').map(Number);
+      const label = new Date(y, mo - 1, 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+      return `<option value="${m}"${m === st.mes ? ' selected' : ''}>${label}</option>`;
+    }).join('');
+    return `
+      <div class="placar-controls">
+        <select id="placar-mes" class="filter-select" aria-label="Mês das votações">${mesOptions}</select>
+        <input type="text" id="placar-busca" class="filter-input" placeholder="Buscar por descrição ou proposição..."
+               autocomplete="off" aria-label="Buscar votação" value="${escapeHTML(st.busca || '')}" />
+      </div>
+      <div id="placar-lista">${placarListaVotacoes(st.lista?.items || [], { status: st.lista?.status, error: st.lista?.error, busca: st.busca })}</div>`;
+  }
+
+  function placarVotoChip(voto) {
+    let variant = 'vote-neutral';
+    if (voto === 'Sim') variant = 'vote-yes';
+    else if (voto === 'Não') variant = 'vote-no';
+    else if (voto === 'Abstenção' || voto === 'Artigo 17') variant = 'vote-abstain';
+    else if (voto === 'Obstrução') variant = 'vote-obstruction';
+    else if (voto === 'Não votou') variant = 'vote-nao-votou';
+    return `<span class="vote-badge ${variant}">${escapeHTML(voto || '—')}</span>`;
+  }
+
+  function placarResumo(totais = {}, transversais = {}) {
+    const card = (label, value) => `
+      <div class="summary-card">
+        <div class="summary-card-value">${value ?? 0}</div>
+        <div class="summary-card-label">${label}</div>
+      </div>`;
+    const trans = ['Governo', 'Maioria', 'Minoria', 'Oposição']
+      .map(k => `<span class="placar-transversal"><strong>${k}:</strong> ${escapeHTML(transversais[k] || '—')}</span>`)
+      .join('');
+    return `
+      <div class="summary-cards placar-totais">
+        ${card('Sim', totais.Sim)}${card('Não', totais['Não'])}${card('Abstenção', totais['Abstenção'])}
+        ${card('Obstrução', totais['Obstrução'])}${card('Artigo 17', totais['Artigo 17'])}${card('Não votou', totais['Não votou'])}
+      </div>
+      <div class="placar-transversais">${trans}</div>
+      <p class="placar-nota">Não votou = deputados atualmente em exercício sem voto registrado</p>`;
+  }
+
+  function placarFiltros(filtros = {}, partidos = []) {
+    const ufOptions = API.UFS.map(uf => `<option value="${uf}"${filtros.uf === uf ? ' selected' : ''}>${uf}</option>`).join('');
+    const partidoOptions = partidos.map(p => `<option value="${escapeHTML(p)}"${filtros.partido === p ? ' selected' : ''}>${escapeHTML(p)}</option>`).join('');
+    const votoOptions = ['Sim', 'Não', 'Abstenção', 'Obstrução', 'Artigo 17', 'Não votou']
+      .map(v => `<option value="${v}"${filtros.voto === v ? ' selected' : ''}>${v}</option>`).join('');
+    return `<div class="placar-filtros">
+      <select id="placar-filtro-uf" class="filter-select" aria-label="Filtrar por estado">
+        <option value="">Todos os estados</option>${ufOptions}
+      </select>
+      <select id="placar-filtro-partido" class="filter-select" aria-label="Filtrar por partido">
+        <option value="">Todos os partidos</option>${partidoOptions}
+      </select>
+      <select id="placar-filtro-voto" class="filter-select" aria-label="Filtrar por voto">
+        <option value="">Todos os votos</option>${votoOptions}
+      </select>
+    </div>`;
+  }
+
+  function placarPartidos(porPartido = []) {
+    if (!porPartido.length) return '';
+    const rows = porPartido.map(p => `
+      <tr>
+        <td><span class="badge badge-party">${escapeHTML(p.sigla)}</span></td>
+        <td>${escapeHTML(p.orientacao || '—')}</td>
+        <td>${p.Sim}</td>
+        <td>${p.Nao}</td>
+        <td>${p.Outros}</td>
+        <td>${p.NaoVotou}</td>
+        <td>${p.pctSeguiu === null ? '—' : `${Math.round(p.pctSeguiu)}%`}</td>
+      </tr>`).join('');
+    return `
+      <h3 class="placar-section-title">Votos por partido</h3>
+      <div class="placar-table-wrap">
+        <table class="placar-partidos-table">
+          <thead><tr><th>Partido</th><th>Orientação</th><th>Sim</th><th>Não</th><th>Outros</th><th>Não votou</th><th>% seguiu</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  function placarTabela(linhas = []) {
+    const rows = linhas.map(l => {
+      const foto = l.urlFoto || API.getFotoURL(l.id);
+      return `
+      <tr class="placar-linha">
+        <td data-label="Deputado">
+          <img class="placar-foto" src="${escapeHTML(foto)}" alt="" loading="lazy" onerror="this.style.display='none'" />
+          <button type="button" class="placar-deputado-link" data-deputy-id="${escapeHTML(l.id)}">${escapeHTML(l.nome || '—')}</button>
+        </td>
+        <td data-label="Partido/UF">${escapeHTML(l.siglaPartido || '—')}-${escapeHTML(l.siglaUf || '—')}</td>
+        <td data-label="Voto">
+          ${placarVotoChip(l.voto)}
+          ${l.alinhamento === 'divergiu' ? '<span class="placar-divergencia" title="Votou contra a orientação do partido">⚠️ contra a orientação</span>' : ''}
+        </td>
+      </tr>`;
+    }).join('');
+    return `
+      <div class="placar-count">${linhas.length} deputados</div>
+      <div class="placar-table-wrap">
+        <table class="placar-tabela">
+          <thead><tr><th>Deputado</th><th>Partido/UF</th><th>Voto</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  function placarBody(data = {}, filtros = {}) {
+    const linhas = API.filtrarLinhasPlacar(data.linhas || [], filtros);
+    const resumo = API.resumirLinhas(linhas);
+    const partidos = [...new Set((data.linhas || []).map(l => l.siglaPartido).filter(Boolean))].sort();
+    const chartHeight = Math.max(140, resumo.porPartido.length * 30 + 40);
+    return `
+      ${placarResumo(resumo.totais, data.transversais)}
+      ${placarFiltros(filtros, partidos)}
+      ${placarPartidos(resumo.porPartido)}
+      <div class="placar-chart-wrap" style="height:${chartHeight}px"><canvas id="placar-chart" role="img" aria-label="Votos por partido (Sim, Não, Outros, Não votou)"></canvas></div>
+      ${placarTabela(linhas)}`;
+  }
+
+  function placarVotacaoSkeleton() {
+    return `
+      <div class="skeleton-card" style="margin-bottom:var(--space-md)">
+        <div class="skeleton skeleton-line w-40" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line" style="margin-bottom:8px"></div>
+        <div class="skeleton skeleton-line w-60"></div>
+      </div>`;
+  }
+
+  function placarVotacaoView(st = {}) {
+    const p = st.placar || {};
+    const backBtn = `<button type="button" class="placar-back" id="placar-back">← Votações do mês</button>`;
+    if (p.status === 'loading' || p.status === 'idle' || !p.status) {
+      return `${backBtn}${placarVotacaoSkeleton()}`;
+    }
+    if (p.status === 'error') {
+      return `${backBtn}
+        <div class="error-banner" style="margin-top:var(--space-md)">
+          ⚠️ Não foi possível carregar esta votação.
+          <br><small>${escapeHTML(p.error || '')}</small>
+          <button class="btn-load-more" type="button" data-placar-retry="placar">Tentar novamente</button>
+        </div>`;
+    }
+    const d = p.data || {};
+    const detalhe = d.detalhe || {};
+    const proposicoes = (detalhe.proposicoesAfetadas || [])
+      .map(pr => escapeHTML(`${pr.siglaTipo} ${pr.numero}/${pr.ano}`)).join(' · ');
+    const header = `
+      ${backBtn}
+      <div class="placar-votacao-head">
+        <div class="placar-votacao-meta">
+          <span>🗓️ ${escapeHTML(API.formatDate(detalhe.dataHoraRegistro || detalhe.data))}</span>
+          ${proposicoes ? `<span class="placar-votacao-prop">${proposicoes}</span>` : ''}
+          ${placarAprovacaoBadge(detalhe.aprovacao)}
+        </div>
+        <p class="placar-votacao-desc">${escapeHTML(detalhe.descricao || 'Votação')}</p>
+        <button class="btn-load-more" id="placar-share" type="button">🔗 Copiar link</button>
+      </div>`;
+    if (d.simbolica) {
+      return `${header}<div class="empty-state"><div class="empty-state-icon">🗳️</div><div class="empty-state-text">Votação simbólica — sem registro individual</div></div>`;
+    }
+    return `${header}<div id="placar-body">${placarBody(d, st.filtros)}</div>`;
+  }
+
+  function placarModal(st = {}) {
+    const content = st.view === 'placar' ? placarVotacaoView(st) : placarListaView(st);
+    return `<div class="placar-modal-inner">
+      <button class="modal-close" id="placar-close-btn" type="button" aria-label="Fechar placar de votações">✕</button>
+      <div class="placar-header">
+        <h2 class="modal-name" id="placar-title" tabindex="-1">🗳️ Placar de Votações</h2>
+        <p class="placar-subtitle">Votações nominais em Plenário — quem votou, quem faltou e quem divergiu do partido</p>
+      </div>
+      ${content}
+    </div>`;
+  }
+
+  let placarChartInstance = null;
+
+  function destroyPlacarChart() {
+    if (placarChartInstance) {
+      placarChartInstance.destroy();
+      placarChartInstance = null;
+    }
+  }
+
+  function renderPlacarChart(canvasId, porPartido = []) {
+    destroyPlacarChart();
+    const canvas = document.getElementById(canvasId);
+    if (!canvas || typeof Chart === 'undefined' || !porPartido.length) return;
+    const labels = porPartido.map(p => p.sigla);
+    const dataset = (label, key, color) => ({ label, data: porPartido.map(p => p[key]), backgroundColor: color });
+    placarChartInstance = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          dataset('Sim', 'Sim', '#10b981'),
+          dataset('Não', 'Nao', '#f43f5e'),
+          dataset('Outros', 'Outros', '#8b8fa3'),
+          dataset('Não votou', 'NaoVotou', '#4b5165'),
+        ],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { stacked: true, ticks: { color: '#8b8fa3' }, grid: { color: 'rgba(255,255,255,0.08)' } },
+          y: { stacked: true, ticks: { color: '#8b8fa3' }, grid: { display: false } },
+        },
+        plugins: {
+          legend: { labels: { color: '#8b8fa3', font: { family: 'Inter', size: 11 } } },
+          tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.raw}` } },
+        },
+      },
+    });
+  }
+
+  // ==========================================
   // Expose
   // ==========================================
   return {
@@ -1671,5 +1964,15 @@ const Components = (() => {
     renderCompareChart,
     destroyCompareChart,
     compareMarkdown,
+    placarModal,
+    placarListaVotacoes,
+    placarResumo,
+    placarFiltros,
+    placarPartidos,
+    placarTabela,
+    placarVotoChip,
+    placarBody,
+    renderPlacarChart,
+    destroyPlacarChart,
   };
 })();

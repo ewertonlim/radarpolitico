@@ -57,6 +57,16 @@ const App = (() => {
       },
       activity: emptyActivityState(),
     },
+    placar: {
+      open: false,
+      view: 'lista',
+      mes: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+      busca: '',
+      votacaoId: null,
+      lista: { status: 'idle', items: [], error: null },
+      placar: { status: 'idle', data: null, error: null },
+      filtros: { uf: '', partido: '', voto: '' },
+    },
   };
 
   function emptyActivityState() {
@@ -82,9 +92,14 @@ const App = (() => {
   // ==========================================
   let $grid, $filters, $hero, $modal, $modalOverlay, $pagination;
   let $compareBar, $compareOverlay, $compareContent;
+  let $placarOverlay, $placarContent;
   let comparePreviousFocus = null;
+  let placarPreviousFocus = null;
   let presenceCompareRun = 0;
   let presenceLoadRun = 0;
+  let placarListaRun = 0;
+  let placarVotacaoRun = 0;
+  let placarBuscaTimer = null;
 
   // ==========================================
   // Initialize
@@ -125,6 +140,9 @@ const App = (() => {
       refreshCompareToggles();
       if (urlIds.length >= 2 && state.compare.selected.length >= 2) openCompareModal();
 
+      const votacaoParam = parseVotacaoParam(window.location.search);
+      if (votacaoParam) openPlacarModal(votacaoParam);
+
       state.loading = false;
     } catch (err) {
       console.error('Failed to initialize:', err);
@@ -147,6 +165,8 @@ const App = (() => {
     $compareBar = document.getElementById('compare-bar');
     $compareOverlay = document.getElementById('compare-overlay');
     $compareContent = document.getElementById('compare-content');
+    $placarOverlay = document.getElementById('placar-overlay');
+    $placarContent = document.getElementById('placar-content');
   }
 
   function showSkeletons() {
@@ -771,7 +791,7 @@ const App = (() => {
     Components.destroyPresencaChart();
     presenceCompareRun++;
     $modalOverlay.classList.remove('active');
-    document.body.style.overflow = '';
+    document.body.style.overflow = (state.placar.open || state.compare.open) ? 'hidden' : '';
   }
 
   function activateTab(name) {
@@ -915,7 +935,7 @@ const App = (() => {
     if (!$compareOverlay) return;
     state.compare.open = false;
     $compareOverlay.classList.remove('active');
-    document.body.style.overflow = state.modalOpen ? 'hidden' : '';
+    document.body.style.overflow = (state.modalOpen || state.placar.open) ? 'hidden' : '';
     Components.destroyCompareChart();
     const url = new URL(location.href);
     url.searchParams.delete('comparar');
@@ -1028,6 +1048,173 @@ const App = (() => {
   }
 
   // ==========================================
+  // Placar de Votações em Plenário (RP-010)
+  // ==========================================
+  function parseVotacaoParam(search = '') {
+    const raw = new URLSearchParams(search).get('votacao');
+    return raw && /^\d+-\d+$/.test(raw) ? raw : null;
+  }
+
+  function serializeVotacaoParam(id) {
+    return `votacao=${id}`;
+  }
+
+  function updateVotacaoParam(id) {
+    const url = new URL(location.href);
+    if (id) url.searchParams.set('votacao', id);
+    else url.searchParams.delete('votacao');
+    history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  }
+
+  function placarMeses() {
+    const meses = [];
+    const d = new Date();
+    d.setDate(1);
+    while (true) {
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      meses.push(key);
+      if (key <= '2023-02') break;
+      d.setMonth(d.getMonth() - 1);
+    }
+    return meses;
+  }
+
+  function renderPlacarModal() {
+    if (!$placarContent) return;
+    Components.destroyPlacarChart();
+    $placarContent.innerHTML = Components.placarModal({ ...state.placar, meses: placarMeses() });
+    renderPlacarChartIfNeeded();
+  }
+
+  function renderPlacarChartIfNeeded() {
+    const p = state.placar;
+    if (p.view !== 'placar' || p.placar.status !== 'ok' || p.placar.data?.simbolica) return;
+    setTimeout(() => {
+      const linhas = API.filtrarLinhasPlacar(p.placar.data.linhas, p.filtros);
+      Components.renderPlacarChart('placar-chart', API.resumirLinhas(linhas).porPartido);
+    }, 0);
+  }
+
+  function renderPlacarLista() {
+    const el = document.getElementById('placar-lista');
+    if (!el) return;
+    const l = state.placar.lista;
+    el.innerHTML = Components.placarListaVotacoes(l.items, { status: l.status, error: l.error, busca: state.placar.busca });
+  }
+
+  function renderPlacarBody() {
+    const el = document.getElementById('placar-body');
+    const data = state.placar.placar.data;
+    if (!el || !data) return;
+    const focusedId = el.contains(document.activeElement) ? document.activeElement.id : null;
+    Components.destroyPlacarChart();
+    el.innerHTML = Components.placarBody(data, state.placar.filtros);
+    if (focusedId) document.getElementById(focusedId)?.focus();
+    renderPlacarChartIfNeeded();
+  }
+
+  async function loadPlacarLista() {
+    const mes = state.placar.mes;
+    const run = ++placarListaRun;
+    state.placar.lista = { status: 'loading', items: [], error: null };
+    renderPlacarLista();
+    try {
+      const items = await API.listarVotacoesMes(mes);
+      if (run !== placarListaRun || !state.placar.open || state.placar.mes !== mes) return;
+      state.placar.lista = { status: 'ok', items, error: null };
+    } catch (err) {
+      if (run !== placarListaRun || !state.placar.open || state.placar.mes !== mes) return;
+      state.placar.lista = { status: 'error', items: [], error: err.message };
+    }
+    renderPlacarLista();
+  }
+
+  function openPlacarModal(votacaoId = null) {
+    if (!$placarOverlay) return;
+    const p = state.placar;
+    p.open = true;
+    p.view = 'lista';
+    p.busca = '';
+    p.votacaoId = null;
+    p.lista = { status: 'idle', items: [], error: null };
+    p.placar = { status: 'idle', data: null, error: null };
+    p.filtros = { uf: state.filters.uf || '', partido: '', voto: '' };
+    placarPreviousFocus = document.activeElement;
+    $placarOverlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    renderPlacarModal();
+    document.getElementById('placar-title')?.focus();
+    loadPlacarLista();
+    if (votacaoId) openPlacarVotacao(votacaoId);
+  }
+
+  function openPlacarVotacao(id) {
+    state.placar.view = 'placar';
+    state.placar.votacaoId = id;
+    updateVotacaoParam(id);
+    loadPlacarVotacao(id);
+  }
+
+  async function loadPlacarVotacao(id) {
+    const run = ++placarVotacaoRun;
+    state.placar.placar = { status: 'loading', data: null, error: null };
+    renderPlacarModal();
+    try {
+      const data = await API.getPlacarVotacao(id);
+      if (run !== placarVotacaoRun || !state.placar.open || state.placar.votacaoId !== id) return;
+      state.placar.placar = { status: 'ok', data, error: null };
+    } catch (err) {
+      if (run !== placarVotacaoRun || !state.placar.open || state.placar.votacaoId !== id) return;
+      state.placar.placar = { status: 'error', data: null, error: err.message };
+    }
+    renderPlacarModal();
+  }
+
+  function placarBackToLista() {
+    placarVotacaoRun++;
+    state.placar.view = 'lista';
+    state.placar.votacaoId = null;
+    updateVotacaoParam(null);
+    renderPlacarModal();
+  }
+
+  function closePlacarModal() {
+    if (!$placarOverlay) return;
+    placarListaRun++;
+    placarVotacaoRun++;
+    clearTimeout(placarBuscaTimer);
+    placarBuscaTimer = null;
+    state.placar.busca = '';
+    state.placar.open = false;
+    $placarOverlay.classList.remove('active');
+    Components.destroyPlacarChart();
+    updateVotacaoParam(null);
+    document.body.style.overflow = (state.modalOpen || state.compare.open) ? 'hidden' : '';
+    if (placarPreviousFocus && typeof placarPreviousFocus.focus === 'function') placarPreviousFocus.focus();
+  }
+
+  function sharePlacarLink() {
+    const link = `${location.origin}${location.pathname}?${serializeVotacaoParam(state.placar.votacaoId)}`;
+    copyCompareText(link, document.getElementById('placar-share'), 'Link copiado!');
+  }
+
+  function trapPlacarFocus(e) {
+    if (e.key !== 'Tab' || !state.placar.open || state.modalOpen || state.compare.open) return;
+    if (!$placarOverlay?.classList.contains('active') || !$placarContent) return;
+    const focusable = [...$placarContent.querySelectorAll('button:not([disabled]), a[href], input, select, [tabindex]:not([tabindex="-1"])')];
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  // ==========================================
   // Event Binding
   // ==========================================
   function bindGlobalEvents() {
@@ -1058,6 +1245,22 @@ const App = (() => {
         retryCompareSection(Number(id), section);
         return;
       }
+
+      // Placar de votações (RP-010)
+      if (e.target.closest('#placar-open-btn')) { openPlacarModal(); return; }
+      if (e.target.closest('#placar-close-btn') || e.target === $placarOverlay) { closePlacarModal(); return; }
+      if (e.target.closest('#placar-back')) { placarBackToLista(); return; }
+      if (e.target.closest('#placar-share')) { sharePlacarLink(); return; }
+      const placarRetry = e.target.closest('[data-placar-retry]');
+      if (placarRetry) {
+        if (placarRetry.dataset.placarRetry === 'lista') loadPlacarLista();
+        else if (state.placar.votacaoId) loadPlacarVotacao(state.placar.votacaoId);
+        return;
+      }
+      const placarVotacaoBtn = e.target.closest('[data-votacao-id]');
+      if (placarVotacaoBtn) { openPlacarVotacao(placarVotacaoBtn.dataset.votacaoId); return; }
+      const placarDepLink = e.target.closest('.placar-deputado-link[data-deputy-id]');
+      if (placarDepLink) { openDeputyModal(parseInt(placarDepLink.dataset.deputyId, 10)); return; }
 
       // Deputy card click
       const card = e.target.closest('.deputy-card');
@@ -1154,6 +1357,19 @@ const App = (() => {
     });
 
     document.addEventListener('change', (e) => {
+      if (e.target.id === 'placar-mes' && state.placar.open) {
+        state.placar.mes = e.target.value;
+        loadPlacarLista();
+        return;
+      }
+      const placarFiltro = e.target.closest('#placar-filtro-uf, #placar-filtro-partido, #placar-filtro-voto');
+      if (placarFiltro && state.placar.open) {
+        state.placar.filtros.uf = document.getElementById('placar-filtro-uf')?.value || '';
+        state.placar.filtros.partido = document.getElementById('placar-filtro-partido')?.value || '';
+        state.placar.filtros.voto = document.getElementById('placar-filtro-voto')?.value || '';
+        renderPlacarBody();
+        return;
+      }
       const select = e.target.closest('select[data-presenca-ano]');
       if (!select || !state.modalOpen) return;
       const presenca = state.modal.activity.presenca;
@@ -1176,6 +1392,15 @@ const App = (() => {
 
     // Frentes search (delegated — re-renders only the list, keeping input focus)
     document.addEventListener('input', (e) => {
+      if (e.target.id === 'placar-busca') {
+        clearTimeout(placarBuscaTimer);
+        const value = e.target.value;
+        placarBuscaTimer = setTimeout(() => {
+          state.placar.busca = value;
+          renderPlacarLista();
+        }, 250);
+        return;
+      }
       if (e.target.id !== 'frentes-search') return;
       const frentes = state.modal.activity && state.modal.activity.frentes;
       if (!frentes) return;
@@ -1187,9 +1412,13 @@ const App = (() => {
 
     // Keyboard: Enter on cards, Escape to close modal
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && state.compare.open) { closeCompareModal(); return; }
-      if (e.key === 'Escape' && state.modalOpen) closeModal();
+      if (e.key === 'Escape') {
+        if (state.compare.open) { closeCompareModal(); return; }
+        if (state.modalOpen) { closeModal(); return; }
+        if (state.placar.open) { closePlacarModal(); return; }
+      }
       trapCompareFocus(e);
+      trapPlacarFocus(e);
       if (e.key === 'Enter') {
         const card = e.target.closest('.deputy-card');
         if (card && !e.target.closest('.compare-toggle')) {
@@ -1282,5 +1511,6 @@ const App = (() => {
     init, state, loadActivity, retryActivityBlock, renderActivityPanel,
     parseCompareParam, serializeCompareParam, toggleCompare, clearCompare,
     openCompareModal, closeCompareModal, retryCompareSection, renderCompareBar,
+    parseVotacaoParam, serializeVotacaoParam, openPlacarModal, closePlacarModal,
   };
 })();

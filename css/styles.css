@@ -2413,6 +2413,112 @@ img {
   .compare-header { flex-direction:column; }
   .compare-modal-inner { padding:var(--space-md); }
 }
+/* ============================================
+   PLACAR DE VOTAÇÕES EM PLENÁRIO (RP-010)
+   ============================================ */
+.placar-open-btn {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  padding: 0.45rem 0.9rem;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+.placar-open-btn:hover { border-color: var(--accent-indigo); color: var(--accent-indigo-light); background: var(--accent-indigo-glow); }
+.placar-open-btn:focus-visible { outline: 2px solid var(--accent-indigo-light); outline-offset: 2px; }
+.placar-modal { max-width: 960px; }
+.placar-modal-inner { padding: var(--space-xl); }
+.placar-header { padding-right: 3rem; margin-bottom: var(--space-lg); }
+.placar-subtitle, .placar-nota { color: var(--text-muted); font-size: var(--fs-sm); margin: 0.25rem 0 0; }
+.placar-controls { display: flex; gap: var(--space-sm); flex-wrap: wrap; margin-bottom: var(--space-md); }
+.placar-controls .filter-select { min-width: 170px; }
+.placar-controls .filter-input { flex: 1; min-width: 180px; }
+.placar-lista-items { display: flex; flex-direction: column; gap: var(--space-sm); }
+.placar-item {
+  display: block; width: 100%; text-align: left; font: inherit;
+  background: var(--bg-glass); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md); padding: var(--space-md);
+  color: var(--text-secondary); cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+button.placar-item:hover { border-color: var(--accent-indigo); background: var(--accent-indigo-glow); }
+button.placar-item:focus-visible { outline: 2px solid var(--accent-indigo-light); outline-offset: 2px; }
+.placar-item--simbolico { cursor: default; opacity: 0.75; }
+.placar-item-header { display: flex; justify-content: space-between; align-items: center; gap: var(--space-sm); }
+.placar-item-data { font-size: var(--fs-xs); color: var(--text-muted); }
+.placar-item-prop { font-weight: 600; color: var(--accent-indigo-light); font-size: var(--fs-sm); margin-top: var(--space-xs); }
+.placar-item-desc { font-size: var(--fs-sm); margin-top: var(--space-xs); }
+.placar-simbolico-tag {
+  display: inline-block; margin-top: var(--space-sm);
+  font-size: var(--fs-xs); color: var(--text-muted);
+  border: 1px dashed var(--border-medium); border-radius: var(--radius-full); padding: 2px 10px;
+}
+.placar-badge {
+  font-size: var(--fs-xs); font-weight: 600; padding: 2px 10px;
+  border-radius: var(--radius-full); border: 1px solid transparent; white-space: nowrap;
+}
+.placar-badge--aprovada { color: var(--accent-emerald-light); background: rgba(16,185,129,0.15); border-color: var(--vote-yes); }
+.placar-badge--rejeitada { color: var(--accent-rose-light); background: rgba(244,63,94,0.15); border-color: var(--vote-no); }
+.placar-back {
+  background: none; border: none; color: var(--accent-indigo-light); cursor: pointer;
+  font: inherit; font-size: var(--fs-sm); font-weight: 600; padding: 0 0 var(--space-md);
+}
+.placar-back:hover { text-decoration: underline; }
+.placar-votacao-head { margin-bottom: var(--space-md); }
+.placar-votacao-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); color: var(--text-muted); font-size: var(--fs-sm); }
+.placar-votacao-prop { color: var(--accent-indigo-light); font-weight: 600; }
+.placar-votacao-desc { font-size: var(--fs-sm); color: var(--text-secondary); margin: var(--space-sm) 0 var(--space-md); }
+.placar-totais { grid-template-columns: repeat(6, 1fr); }
+.placar-transversais { display: flex; flex-wrap: wrap; gap: var(--space-md); font-size: var(--fs-sm); color: var(--text-secondary); margin-top: var(--space-sm); }
+.placar-filtros { display: flex; gap: var(--space-sm); flex-wrap: wrap; margin: var(--space-md) 0; }
+.placar-section-title { font-size: var(--fs-md); color: var(--text-primary); margin: var(--space-lg) 0 var(--space-sm); }
+.placar-table-wrap { overflow-x: auto; }
+.placar-partidos-table, .placar-tabela { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.placar-partidos-table th, .placar-tabela th {
+  text-align: left; color: var(--text-muted); font-size: var(--fs-xs); font-weight: 600;
+  padding: var(--space-xs) var(--space-sm); border-bottom: 1px solid var(--border-subtle); white-space: nowrap;
+}
+.placar-partidos-table td, .placar-tabela td {
+  padding: var(--space-sm); border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary); vertical-align: middle;
+}
+.placar-foto {
+  width: 32px; height: 32px; border-radius: 50%; object-fit: cover;
+  border: 2px solid var(--accent-indigo); margin-right: var(--space-sm); vertical-align: middle;
+}
+.placar-deputado-link {
+  background: none; border: none; color: var(--accent-indigo-light);
+  cursor: pointer; font: inherit; padding: 0; text-align: left;
+}
+.placar-deputado-link:hover { text-decoration: underline; }
+.placar-deputado-link:focus-visible { outline: 2px solid var(--accent-indigo-light); outline-offset: 2px; }
+.placar-divergencia { color: var(--accent-amber-light); font-size: var(--fs-xs); margin-left: var(--space-sm); white-space: nowrap; }
+.placar-count { font-size: var(--fs-sm); color: var(--text-muted); margin: var(--space-md) 0 var(--space-sm); }
+.placar-chart-wrap { margin: var(--space-lg) 0; }
+.vote-badge.vote-nao-votou {
+  color: var(--text-muted);
+  background: rgba(139, 143, 163, 0.12);
+  border-color: var(--border-medium);
+}
+@media (max-width: 640px) {
+  .placar-modal-inner { padding: var(--space-md); }
+  .placar-totais { grid-template-columns: repeat(3, 1fr); }
+  .placar-tabela thead { display: none; }
+  .placar-tabela, .placar-tabela tbody, .placar-tabela tr, .placar-tabela td { display: block; width: 100%; }
+  .placar-linha {
+    border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+    padding: var(--space-sm); margin-bottom: var(--space-sm); background: var(--bg-glass);
+  }
+  .placar-linha td { border: none; padding: var(--space-xs) 0; display: flex; justify-content: space-between; align-items: center; gap: var(--space-sm); }
+  .placar-linha td::before { content: attr(data-label); font-size: var(--fs-xs); color: var(--text-muted); font-weight: 600; }
+  .placar-linha td:first-child { justify-content: flex-start; }
+  .placar-linha td:first-child::before { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
-  .compare-bar, .compare-overlay, .compare-toggle { transition:none; animation:none; }
+  .compare-bar, .compare-overlay, .compare-toggle, .placar-overlay, .placar-open-btn, .placar-item { transition:none; animation:none; }
 }
